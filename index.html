@@ -1,0 +1,2541 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>AquariumMon — Bodensee Abenteuer</title>
+<style>
+html,body{margin:0;padding:0;overflow:hidden;background:#020c18;width:100%;height:100vh;height:100dvh;position:fixed;overscroll-behavior:none;-webkit-text-size-adjust:100%}
+#root{width:100%;height:100vh;height:100dvh}
+*{-webkit-tap-highlight-color:transparent}
+button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+#err{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;background:#020c18;color:#f87171;font-family:monospace;font-size:13px;padding:24px;text-align:center;line-height:1.7;z-index:9999}
+#err b{color:#38bdf8;display:block;margin-bottom:10px;font-size:15px}
+#loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#020c18;color:#38bdf8;font-family:monospace;font-size:14px;z-index:9000}
+</style>
+</head>
+<body>
+<div id="loading">Lade AquariumMon…</div>
+<div id="err"><b>⚠ Fehler beim Laden</b><span id="errmsg"></span></div>
+<div id="root"></div>
+
+<script>
+window.__failed=false;
+function showErr(msg){
+  window.__failed=true;
+  var l=document.getElementById('loading'); if(l)l.style.display='none';
+  var e=document.getElementById('err'); if(e){e.style.display='flex';}
+  var m=document.getElementById('errmsg'); if(m)m.textContent=msg;
+}
+window.addEventListener('error',function(ev){
+  showErr((ev.message||'Unbekannter Fehler')+(ev.filename?(' @ '+ev.filename.split('/').pop()+':'+ev.lineno):''));
+});
+function libFail(name){return function(){showErr('Konnte '+name+' nicht laden. Bitte Internetverbindung prüfen und Seite neu laden.');};}
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js" crossorigin onerror="libFail('React')()"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin onerror="libFail('ReactDOM')()"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js" crossorigin onerror="libFail('Babel')()"></script>
+
+<script type="text/babel" data-presets="react">
+const {useState,useEffect,useRef} = React;
+
+/* ═══════════════════════════════════════════════════ AUDIO (Chiptune) ═══
+   Alles wird per Web Audio erzeugt – keine externen Dateien.
+   Browser erlauben Ton erst nach einer Nutzergeste → AUDIO.unlock().        */
+const AUDIO={
+  ctx:null, master:null, musicGain:null, sfxGain:null, lastError:null,
+  musicOn:true, sfxOn:true,
+  _timer:null, _track:null, _step:0, _unlocked:false,
+
+  unlock(){
+    if(this._unlocked)return;
+    try{
+      const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
+      this.ctx=new AC();
+      this.master=this.ctx.createGain();this.master.gain.value=0.5;this.master.connect(this.ctx.destination);
+      this.musicGain=this.ctx.createGain();this.musicGain.gain.value=this.musicOn?0.22:0;this.musicGain.connect(this.master);
+      this.sfxGain=this.ctx.createGain();this.sfxGain.gain.value=this.sfxOn?0.5:0;this.sfxGain.connect(this.master);
+      // iOS/Safari: Kontext wird erst durch eine abgespielte Pufferquelle
+      // innerhalb der Nutzergeste wirklich freigegeben.
+      try{
+        const b=this.ctx.createBuffer(1,1,22050);
+        const src=this.ctx.createBufferSource();
+        src.buffer=b;src.connect(this.ctx.destination);
+        src.start?src.start(0):src.noteOn&&src.noteOn(0);
+      }catch(e){}
+      if(this.ctx.state==="suspended"){const p=this.ctx.resume();if(p&&p.catch)p.catch(()=>{});}
+      this._unlocked=true;
+      this.lastError=null;
+      if(this._track)this.playMusic(this._track,true);
+    }catch(e){this.lastError=(e&&e.message)||String(e);this._unlocked=true;}
+  },
+  resume(){
+    if(!this.ctx)return;
+    if(this.ctx.state==="suspended"){
+      const p=this.ctx.resume();
+      if(p&&p.catch)p.catch(e=>{this.lastError="resume: "+(e&&e.message||e);});
+    }
+  },
+  setMusic(on){
+    this.musicOn=on;
+    if(this.musicGain)this.musicGain.gain.value=on?0.22:0;
+    if(!on){this.stopMusic();}                       // Stück merken, nur Wiedergabe stoppen
+    else{if(!this.ctx)this.unlock();this.resume();if(this._track)this.playMusic(this._track,true);}
+  },
+  setSfx(on){this.sfxOn=on;if(this.sfxGain)this.sfxGain.gain.value=on?0.5:0;},
+
+  // Einzelner Ton
+  tone(freq,dur,type="square",when=0,vol=1,dest=null){
+    if(!this.ctx)return;
+    const t0=this.ctx.currentTime+when+0.02;   // kleiner Vorlauf
+    const o=this.ctx.createOscillator(),g=this.ctx.createGain();
+    o.type=type;o.frequency.setValueAtTime(freq,t0);
+    g.gain.setValueAtTime(0,t0);
+    g.gain.linearRampToValueAtTime(vol,t0+0.015);
+    g.gain.linearRampToValueAtTime(0,t0+dur);
+    o.connect(g);g.connect(dest||this.sfxGain||this.ctx.destination);
+    o.start(t0);o.stop(t0+dur+0.05);
+  },
+  // Gleitender Ton (für Sprünge/Fanfaren)
+  slide(f1,f2,dur,type="square",when=0,vol=0.8){
+    if(!this.ctx)return;
+    const t0=this.ctx.currentTime+when+0.02;
+    const o=this.ctx.createOscillator(),g=this.ctx.createGain();
+    o.type=type;o.frequency.setValueAtTime(f1,t0);o.frequency.linearRampToValueAtTime(Math.max(1,f2),t0+dur);
+    g.gain.setValueAtTime(0,t0);
+    g.gain.linearRampToValueAtTime(vol,t0+0.015);
+    g.gain.linearRampToValueAtTime(0,t0+dur);
+    o.connect(g);g.connect(this.sfxGain||this.ctx.destination);o.start(t0);o.stop(t0+dur+0.05);
+  },
+  // Rauschen (Treffer, Wasser, Schritte)
+  noise(dur,when=0,vol=0.4,filterHz=1200){
+    if(!this.ctx)return;
+    const t0=this.ctx.currentTime+when+0.02;
+    const n=Math.floor(this.ctx.sampleRate*dur);
+    const buf=this.ctx.createBuffer(1,n,this.ctx.sampleRate);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*(1-i/n);
+    const src=this.ctx.createBufferSource();src.buffer=buf;
+    const f=this.ctx.createBiquadFilter();f.type="lowpass";f.frequency.value=filterHz;
+    const g=this.ctx.createGain();g.gain.value=vol;
+    src.connect(f);f.connect(g);g.connect(this.sfxGain||this.ctx.destination);
+    src.start(t0);
+  },
+
+  sfx(name){
+    if(!this.sfxOn)return;
+    if(!this.ctx)this.unlock();
+    if(!this.ctx)return;
+    this.resume();
+    const S={
+      click:   ()=>this.tone(880,0.05,"square",0,0.5),
+      back:    ()=>this.tone(440,0.07,"square",0,0.45),
+      step:    ()=>this.noise(0.05,0,0.12,600),
+      encounter:()=>{[0,.09,.18].forEach((d,i)=>this.tone([523,659,880][i],0.1,"square",d,0.6));this.noise(0.3,0.26,0.25,2200);},
+      hit:     ()=>{this.noise(0.14,0,0.42,1600);this.tone(180,0.1,"sawtooth",0,0.4);},
+      crit:    ()=>{this.noise(0.2,0,0.5,2600);this.slide(420,120,0.22,"sawtooth",0,0.5);},
+      hurt:    ()=>{this.slide(300,90,0.2,"square",0,0.4);},
+      faint:   ()=>{this.slide(500,60,0.5,"triangle",0,0.5);},
+      buff:    ()=>{[523,659,784].forEach((f,i)=>this.tone(f,0.1,"triangle",i*0.06,0.4));},
+      cast:    ()=>{this.slide(200,700,0.22,"sine",0,0.35);this.noise(0.12,0.18,0.18,900);},
+      reel:    ()=>{this.tone(660,0.05,"square",0,0.4);this.tone(880,0.05,"square",0.06,0.4);},
+      catch:   ()=>{[659,784,988,1319].forEach((f,i)=>this.tone(f,0.13,"square",i*0.09,0.5));},
+      levelup: ()=>{[523,659,784,1047].forEach((f,i)=>this.tone(f,0.14,"triangle",i*0.08,0.5));},
+      evolve:  ()=>{[392,494,587,784,988].forEach((f,i)=>this.tone(f,0.18,"triangle",i*0.11,0.45));},
+      win:     ()=>{[523,523,523,659,784].forEach((f,i)=>this.tone(f,i===4?0.4:0.12,"square",i*0.11,0.5));},
+      lose:    ()=>{[392,349,294,220].forEach((f,i)=>this.tone(f,0.24,"triangle",i*0.16,0.45));},
+      door:    ()=>{this.slide(160,420,0.16,"square",0,0.4);},
+      heal:    ()=>{[659,784,1047].forEach((f,i)=>this.tone(f,0.16,"sine",i*0.1,0.42));},
+      deny:    ()=>{this.tone(200,0.14,"square",0,0.4);this.tone(150,0.16,"square",0.13,0.4);},
+      legend:  ()=>{[131,165,196,262].forEach((f,i)=>this.tone(f,0.5,"sawtooth",i*0.16,0.4));this.noise(0.8,0.3,0.3,500);},
+    };
+    (S[name]||S.click)();
+  },
+
+  /* ── Musik: kurze Schleifen aus Bass + Melodie ── */
+  playMusic(track,force){
+    this._track=track;
+    if(!this.ctx||!this.musicOn)return;
+    if(this._timer&&!force)return;
+    this.resume();
+    this.stopMusic();
+    const T=MUSIC[track];if(!T)return;
+    // Mehrteilige Stücke: mel kann ein Array von Abschnitten sein (A/B/C ...)
+    const parts=Array.isArray(T.mel[0])?T.mel:[T.mel];
+    const bass=Array.isArray(T.bass[0])?T.bass:[T.bass];
+    this._step=0;
+    const stepMs=T.tempo;
+    this._timer=setInterval(()=>{
+      if(!this.ctx||!this.musicOn)return;
+      const partLen=parts[0].length;
+      const partIdx=Math.floor(this._step/partLen)%parts.length;
+      const mel=parts[partIdx], bs=bass[partIdx%bass.length];
+      const i=this._step%partLen;
+      const mn=mel[i], bn=bs[i%bs.length];
+      if(mn)this.tone(mn,stepMs/1000*0.9,T.wave||"square",0,0.5,this.musicGain);
+      if(bn)this.tone(bn,stepMs/1000*1.5,"triangle",0,0.42,this.musicGain);
+      // Begleitstimme: leise Terz auf jedem zweiten Schritt
+      if(T.harm&&mn&&i%2===0)this.tone(mn*1.26,stepMs/1000*0.5,"triangle",0.02,0.16,this.musicGain);
+      // Sanftes Schlagwerk
+      if(T.perc&&i%4===0)this.noise(0.05,0,0.05,400);
+      this._step++;
+    },stepMs);
+  },
+  stopMusic(hard){if(this._timer){clearInterval(this._timer);this._timer=null;}if(hard)this._track=null;},
+};
+// Notenfrequenzen
+const N={C3:131,D3:147,E3:165,F3:175,G3:196,A3:220,B3:247,
+         C4:262,D4:294,E4:330,F4:349,G4:392,A4:440,B4:494,
+         C5:523,D5:587,E5:659,F5:698,G5:784,A5:880,B5:988,C6:1047};
+const MUSIC={
+  overworld:{tempo:190,wave:"square",harm:true,perc:true,
+    mel:[
+      // A – Hauptthema, aufsteigend
+      [N.G4,N.B4,N.D5,N.G5, N.E5,N.D5,N.B4,0,  N.C5,N.E5,N.G5,N.E5, N.D5,N.B4,N.G4,0],
+      // A' – Variation mit Vorhalt
+      [N.G4,N.B4,N.D5,N.G5, N.F5,N.E5,N.D5,0,  N.C5,N.E5,N.A5,N.G5, N.E5,N.D5,N.C5,0],
+      // B – Gegenmelodie, ruhiger und höher
+      [N.E5,0,N.F5,N.G5, N.A5,0,N.G5,N.F5,  N.E5,0,N.D5,N.E5, N.G5,0,N.D5,0],
+      // C – Abschluss, führt zurück zu A
+      [N.C5,N.D5,N.E5,N.G5, N.A5,N.G5,N.E5,N.D5, N.B4,N.D5,N.G5,N.D5, N.G4,0,0,0],
+    ],
+    bass:[
+      [N.G3,0,N.D3,0, N.E3,0,N.B3,0, N.C3,0,N.G3,0, N.D3,0,N.G3,0],
+      [N.G3,0,N.D3,0, N.B3,0,N.G3,0, N.C3,0,N.A3,0, N.D3,0,N.G3,0],
+      [N.A3,0,N.F3,0, N.C3,0,N.F3,0, N.A3,0,N.G3,0, N.D3,0,N.G3,0],
+      [N.C3,0,N.E3,0, N.F3,0,N.D3,0, N.G3,0,N.B3,0, N.G3,0,0,0],
+    ]},
+  city:{tempo:230,wave:"triangle",
+    mel:[N.C5,N.E5,N.G5,N.E5,N.F5,N.A5,N.F5,N.C5,N.D5,N.F5,N.A5,N.F5,N.E5,N.C5,N.G4,0],
+    bass:[N.C3,0,N.F3,0,N.D3,0,N.G3,0]},
+  battle:{tempo:150,wave:"square",
+    mel:[N.E5,N.E5,N.D5,N.E5,N.G5,0,N.E5,N.D5,N.C5,N.C5,N.B4,N.C5,N.E5,0,N.C5,0],
+    bass:[N.A3,N.A3,N.F3,N.F3,N.C3,N.C3,N.G3,N.G3]},
+  boss:{tempo:135,wave:"sawtooth",
+    mel:[N.A4,N.C5,N.E5,N.A5,N.G5,N.E5,N.C5,N.E5,N.F5,N.D5,N.B4,N.D5,N.E5,0,N.A4,0],
+    bass:[N.A3,N.A3,N.F3,N.F3,N.D3,N.D3,N.E3,N.E3]},
+  legend:{tempo:170,wave:"sawtooth",
+    mel:[N.D5,N.F5,N.A5,N.D5,N.C5,N.E5,N.G5,N.C5,N.B4,N.D5,N.F5,N.B4,N.A4,N.C5,N.E5,0],
+    bass:[N.D3,N.D3,N.C3,N.C3,N.B3,N.B3,N.A3,N.A3]},
+  title:{tempo:260,wave:"triangle",
+    mel:[N.C5,0,N.E5,0,N.G5,0,N.E5,0,N.A4,0,N.C5,0,N.E5,0,0,0],
+    bass:[N.C3,0,N.A3,0,N.F3,0,N.G3,0]},
+  victory:{tempo:180,wave:"square",
+    mel:[N.C5,N.E5,N.G5,N.C6,N.G5,N.C6,0,0],
+    bass:[N.C3,N.E3,N.G3,N.C4]},
+};
+
+/* ═══════════════════════════════════════════════════ GAME DATA ═══ */
+const MONS = {
+  karpfi:   {name:"Karpfi",   type:"Wasser", color:"#38bdf8",maxHp:45,atk:12,def:15,spd:8, catch:70,moves:["Schwanzflosse","Blasenwerfen","Schuppenschild","Tauchstoß"]},
+  hechtus:  {name:"Hechtus",  type:"Räuber", color:"#4ade80",maxHp:40,atk:18,def:10,spd:14,catch:50,moves:["Hechtsprung","Reißzahnbiss","Blitzangriff","Jagdtaktik"]},
+  barschi:  {name:"Barschi",  type:"Wasser", color:"#fbbf24",maxHp:42,atk:14,def:13,spd:11,catch:65,moves:["Flossenschlag","Kiemenstoß","Tarnmuster","Gegenangriff"]},
+  forellius:{name:"Forellius",type:"Bergbach",color:"#f87171",maxHp:36,atk:15,def:9, spd:18,catch:55,moves:["Strömungsstoß","Sprungsalto","Schillerschuppe","Regenbogenstrahl"]},
+  welsio:   {name:"Welsio",   type:"Tiefsee",color:"#c084fc",maxHp:65,atk:20,def:18,spd:5, catch:25,moves:["Bartfühler","Bodenschlamm","Nachtjagd","Klammergriff"]},
+  zanderan: {name:"Zanderan", type:"Apex",   color:"#fb923c",maxHp:55,atk:22,def:12,spd:13,catch:30,moves:["Zanderbiss","Dunkelwasser","Fangstoß","Tiefentauchen"]},
+  walox:    {name:"Walox",    type:"Legendär",color:"#22d3ee",maxHp:190,atk:30,def:30,spd:22,catch:0, legend:true,moves:["Flutwelle","Echoschall","Tiefenstrudel","Walgesang"]},
+  // Entwickelte Starter-Formen (Level 3, im Menü aktivierbar)
+  koidrako:   {name:"Koidrako",  type:"Drache",  color:"#2563eb",maxHp:88,atk:28,def:30,spd:16,catch:0,evo:true,moves:["Flutwelle","Tauchstoß","Schuppenschild","Regenbogenstrahl"]},
+  barrakoloss:{name:"Barrakoloss",type:"Titan",  color:"#f59e0b",maxHp:92,atk:32,def:26,spd:18,catch:0,evo:true,moves:["Zanderbiss","Kiemenstoß","Jagdtaktik","Fangstoß"]},
+  salmorai:   {name:"Salmorai",  type:"Klinge",  color:"#ef4444",maxHp:78,atk:34,def:22,spd:30,catch:0,evo:true,moves:["Regenbogenstrahl","Strömungsstoß","Schillerschuppe","Tiefenstrudel"]},
+  hechtaris:  {name:"Hechtaris", type:"Jäger",   color:"#22c55e",maxHp:80,atk:36,def:20,spd:28,catch:0,evo:true,moves:["Hechtsprung","Reißzahnbiss","Blitzangriff","Jagdtaktik"]},
+  welsemoth:  {name:"Welsemoth", type:"Abgrund", color:"#a855f7",maxHp:112,atk:30,def:34,spd:10,catch:0,evo:true,moves:["Nachtjagd","Bodenschlamm","Klammergriff","Tiefenstrudel"]},
+  zanderex:   {name:"Zanderex",  type:"Apex+",   color:"#f97316",maxHp:96,atk:38,def:24,spd:24,catch:0,evo:true,moves:["Zanderbiss","Dunkelwasser","Fangstoß","Tiefentauchen"]},
+};
+const EVO={karpfi:"koidrako",barschi:"barrakoloss",forellius:"salmorai",hechtus:"hechtaris",welsio:"welsemoth",zanderan:"zanderex"};
+const STARTER_EVOS=["koidrako","barrakoloss","salmorai"];
+const EVOLVED_KEYS=Object.values(EVO);
+const BASE_KEYS=Object.keys(MONS).filter(k=>!MONS[k].legend&&!MONS[k].evo); // die 6 normalen
+const dexComplete=p=>BASE_KEYS.every(k=>(p?.caught||[]).includes(k));
+const MOVES={
+  "Schwanzflosse":{p:30},"Blasenwerfen":{p:25},"Schuppenschild":{p:0,buff:"def"},
+  "Tauchstoß":{p:40},"Hechtsprung":{p:45},"Reißzahnbiss":{p:35},"Jagdtaktik":{p:0,buff:"atk"},
+  "Blitzangriff":{p:38},"Flossenschlag":{p:28},"Kiemenstoß":{p:40},"Tarnmuster":{p:0,buff:"def"},
+  "Gegenangriff":{p:35},"Strömungsstoß":{p:40},"Sprungsalto":{p:35},"Schillerschuppe":{p:0,buff:"spd"},
+  "Regenbogenstrahl":{p:55},"Bartfühler":{p:35},"Bodenschlamm":{p:25},"Nachtjagd":{p:50},
+  "Klammergriff":{p:30},"Zanderbiss":{p:50},"Dunkelwasser":{p:30},"Fangstoß":{p:45},"Tiefentauchen":{p:60},
+  "Flutwelle":{p:55},"Echoschall":{p:45},"Tiefenstrudel":{p:65},"Walgesang":{p:0,buff:"def"},
+};
+const CITIES=[
+  {id:"konstanz", name:"Konstanz",  x:14,y:27,ex:15,ey:27,wild:["karpfi","barschi"],  boss:{name:"Angler Grunter",mons:["hechtus"],lv:1,tough:1.15},        si:0,bait:"wurm"},
+  {id:"ueberling",name:"Überlingen",x:10,y:11,ex:11,ey:11,wild:["karpfi","forellius"],boss:{name:"Angler Hilde",  mons:["barschi","forellius"],lv:2,tough:1.35},si:1,bait:"insekt"},
+  {id:"fhafen",   name:"Friedrichshafen",   x:30,y:11,ex:31,ey:11,wild:["hechtus","forellius"],boss:{name:"Boss Dorsch",  mons:["hechtus","forellius","barschi"],lv:2,tough:1.50},si:2,bait:"spinner"},
+  {id:"lindau",   name:"Lindau",    x:47,y:11,ex:48,ey:11,wild:["zanderan","hechtus"], boss:{name:"Boss Dorsch II",mons:["zanderan","hechtus","forellius"],lv:3,tough:1.45},si:3,bait:"blinker"},
+  {id:"bregenz",  name:"Bregenz",   x:50,y:27,ex:51,ey:27,wild:["welsio","zanderan"],  boss:{name:"Dr. Haken",   mons:["welsio","zanderan","hechtus"],lv:3,tough:1.65},si:4,finale:true,bait:"tiefsee"},
+  {id:"ravensburg",name:"Ravensburg",x:20,y:5, ex:20,ey:6, wild:["forellius","barschi"],boss:{name:"Rivale Yuri",mons:["zanderex","welsemoth","hechtaris"],lv:3,tough:1.45},rival:true},
+];
+// Eingangskachel-Wert → Stadt-ID
+const ENTRANCE={5:"konstanz",6:"ueberling",7:"fhafen",8:"lindau",9:"bregenz",13:"ravensburg"};
+// Köder = Orden-Ersatz. Jeder besiegte Boss schenkt einen Köder, der die Fangchance erhöht.
+const BAITS={
+  wurm:   {name:"Wurm-Köder",    ico:"🪱",col:"#f9a8d4",bonus:8, by:"Angler Grunter"},
+  insekt: {name:"Insekten-Köder",ico:"🦗",col:"#a3e635",bonus:10,by:"Angler Hilde"},
+  spinner:{name:"Spinner-Köder", ico:"🌀",col:"#38bdf8",bonus:12,by:"Boss Dorsch"},
+  blinker:{name:"Blinker-Köder", ico:"✨",col:"#fbbf24",bonus:14,by:"Boss Dorsch II"},
+  tiefsee:{name:"Tiefsee-Köder", ico:"🔱",col:"#c084fc",bonus:18,by:"Dr. Haken"},
+};
+const DLGS=[
+  [{spk:"Prof. Seestern",ico:"🧑‍🔬",txt:"Willkommen am Bodensee! Ich bin Professor Seestern."},{spk:"Prof. Seestern",ico:"🧑‍🔬",txt:"Team Angler bedroht den See! Die Aquariummon sind in Gefahr."},{spk:"PLAYER",ico:"🎣",txt:"Ich helfe dir, den Bodensee zu retten!"}],
+  [{spk:"Angler Hilde",ico:"😤",txt:"Du hast unsere Basis gestört!"},{spk:"PLAYER",ico:"🎣",txt:"Euer illegales Fischen endet hier!"}],
+  [{spk:"BM Wellen",ico:"👩‍💼",txt:"Team Angler nutzt den Zeppelin-Steg!"},{spk:"Boss Dorsch",ico:"🦹",txt:"Zeig deine Stärke!"}],
+  [{spk:"Boss Dorsch II",ico:"🦹",txt:"Hier endet deine Reise!"},{spk:"PLAYER",ico:"🎣",txt:"Nein!"},{spk:"Boss Dorsch II",ico:"🦹",txt:"Narr — KÄMPFE!"}],
+  [{spk:"Dr. Haken",ico:"😈",txt:"Ich bin Dr. Haken — Mastermind hinter Team Angler!"},{spk:"PLAYER",ico:"🎣",txt:"Meine Aquariummon stoppen dich!"},{spk:"Dr. Haken",ico:"😈",txt:"KÄMPFE!"}],
+];
+
+/* ═══════════════════════════════════════════════════ SAVE / LOAD ═══ */
+async function saveGame(data){
+  try{localStorage.setItem("aquamon_save",JSON.stringify(data));}catch{}
+}
+async function loadSave(){
+  try{const r=localStorage.getItem("aquamon_save");return r?JSON.parse(r):null;}catch{return null;}
+}
+async function deleteSave(){try{localStorage.removeItem("aquamon_save");}catch{}}
+
+/* ═══════════════════════════════════════════════════ MAP ENGINE ═══ */
+const MAP_W=58,MAP_H=38,TS=32;
+const T_TREE=0,T_GRASS=1,T_PATH=2,T_WATER=3,T_SAND=4,T_HOUSE=10,T_OWPIER=11,T_WALOX=12,T_RAVENS=13;
+const WALOX_TILE={x:33,y:20}; // Stand am Stegende, von dem aus Walox in der Seemitte erscheint
+function buildMap(){
+  const m=Array.from({length:MAP_H},()=>new Uint8Array(MAP_W).fill(T_GRASS));
+  for(let y=0;y<MAP_H;y++)for(let x=0;x<MAP_W;x++)if(x<2||x>=MAP_W-2||y<2||y>=MAP_H-2)m[y][x]=T_TREE;
+  [[3,3,5,4],[27,2,8,3],[50,3,6,4],[2,26,4,8],[52,26,4,8]].forEach(([x,y,w,h])=>{
+    for(let dy=0;dy<h;dy++)for(let dx=0;dx<w;dx++)if(m[y+dy])m[y+dy][x+dx]=T_TREE;
+  });
+  for(let y=0;y<MAP_H;y++)for(let x=0;x<MAP_W;x++){
+    const a=(x-27)/17,b=(y-19)/7,c=(x-40)/12,d=(y-20)/5.5;
+    if(a*a+b*b<1||c*c+d*d<0.88)m[y][x]=T_WATER;
+  }
+  const snap=m.map(r=>new Uint8Array(r));
+  for(let y=1;y<MAP_H-1;y++)for(let x=1;x<MAP_W-1;x++)
+    if(snap[y][x]===T_GRASS&&[[0,1],[0,-1],[1,0],[-1,0]].some(([dy,dx])=>snap[y+dy]?.[x+dx]===T_WATER))m[y][x]=T_SAND;
+  const addH=(y,x1,x2)=>{for(let x=x1;x<=x2;x++)if(m[y]?.[x]!==T_WATER&&m[y]?.[x]!==T_TREE)m[y][x]=T_PATH;};
+  const addV=(x,y1,y2)=>{for(let y=y1;y<=y2;y++)if(m[y]?.[x]!==T_WATER&&m[y]?.[x]!==T_TREE)m[y][x]=T_PATH;};
+  addH(11,4,54);addH(27,4,54);addV(8,11,27);
+  // Ravensburg (Inland-Stadt im Norden) mit Anbindung an die Nordroute
+  addV(20,6,11);
+  for(let dy=0;dy<2;dy++)for(let dx=0;dx<5;dx++)if(m[3+dy]?.[18+dx]!==undefined&&m[3+dy][18+dx]!==T_WATER)m[3+dy][18+dx]=T_HOUSE;
+  m[5][20]=T_RAVENS;
+  // Steg von der Südküste in die Seemitte (über Wasser, begehbar)
+  for(let y=21;y<=26;y++)m[y][WALOX_TILE.x]=T_OWPIER;
+  m[WALOX_TILE.y][WALOX_TILE.x]=T_WALOX;
+  [[5,14,27,12,29,5,3],[6,10,11,8,5,5,6],[7,30,11,28,4,6,7],[8,47,11,45,5,5,6],[9,50,27,48,29,5,3]]
+    .forEach(([tile,ex,ey,bx,by,bw,bh])=>{
+      for(let dy=0;dy<bh;dy++)for(let dx=0;dx<bw;dx++)if(m[by+dy]?.[bx+dx]!==undefined&&m[by+dy][bx+dx]!==T_WATER)m[by+dy][bx+dx]=T_HOUSE;
+      if(m[ey]?.[ex]!==undefined)m[ey][ex]=tile;
+    });
+  return m;
+}
+const THE_MAP=buildMap();
+const OW={pos:{x:18*TS+TS/2,y:27*TS+TS/2},facing:"left"};
+
+/* ───── CITY INTERIOR (walkable sub-map, shared by all towns) ───── */
+const KW=20,KH=15,KTS=32;
+const K_ARENA=20,K_CENTER=21,K_EXIT=22,K_PIER=23,K_SEESTERN=24,K_LAND=25,K_WALL=26,K_DECK=27,K_FLOWER=28,K_ROCK=29;
+/* Zeichen-Legende der Stadtpläne:
+   # Baum  . Wiese  , Pflaster  ~ Wasser  s Sand  H Haus  W Mauer  b Steg/Deck
+   f Blumenbeet  ^ Fels  L Wahrzeichen (fest)  A Arena  C Center  P Angelsteg
+   S Prof. Seestern  X Ausgang                                              */
+const CH={"#":T_TREE,".":T_GRASS,",":T_PATH,"~":T_WATER,"s":T_SAND,"H":T_HOUSE,
+  "W":K_WALL,"b":K_DECK,"f":K_FLOWER,"^":K_ROCK,"L":K_LAND,
+  "A":K_ARENA,"C":K_CENTER,"P":K_PIER,"S":K_SEESTERN,"X":K_EXIT};
+const SOLID=new Set([T_TREE,T_HOUSE,T_WATER,K_WALL,K_LAND,K_ROCK]);
+
+/* ═══ STADTPLÄNE (an echten Grundrissen orientiert) ═══ */
+const CITY_PLANS={
+  // KONSTANZ — Hafen im Osten, Imperia auf der Mole, Münster & Konzil in der Altstadt
+  konstanz:{plan:[
+    "####################",
+    "#..,,,,,,,,,,,,,,~~#",
+    "#.LLL,,,,,,,,,LL,~~#",
+    "#.LLL,,,,,,,,,LL,~~#",
+    "#..A.,,,,,,,,,,,,b~#",
+    "#,,,,,,,,,,,,,,,,bL#",
+    "#,,,,,,,,,,,,,,,,bP#",
+    "#,HH,,,,,,,,,HHH,~~#",
+    "#,HH,,,,,,,,,HHH,~~#",
+    "#,,C,,,,,,,,,,S,,~~#",
+    "#,,,,,,,,,,,,,,,,,~#",
+    "#.ff,,,,,,,,,,,ff,.#",
+    "#.....,,,,,,,,.....#",
+    "#.........X........#",
+    "####################"],
+    marks:[{x:2,y:2,w:3,h:2,kind:"muenster",label:"Münster"},
+           {x:14,y:2,w:2,h:2,kind:"konzil",label:"Konzil"},
+           {x:18,y:5,w:1,h:1,kind:"imperia",label:"Imperia"}],
+    lamps:[[6,5],[13,5],[6,10],[13,10]]},
+  // ÜBERLINGEN — Seepromenade im Süden, Münster St. Nikolaus, Stadtgraben
+  ueberling:{plan:[
+    "####################",
+    "#..,,,,,,,,,,,,,,..#",
+    "#.,,,,,LLL,,,,,,,,.#",
+    "#.,HH,,LLL,,,,HH,,.#",
+    "#.,HH,,,A,,,,,HH,,.#",
+    "#.,,,,,,,,,,,,,,,,.#",
+    "#WWWWWW,,,,,,WWWWWW#",
+    "#.,,,,,,,,,,,,,,C,.#",
+    "#.ff,,,,,,,,,,,,,,.#",
+    "#.,,,,,,,,,,,,,,ff,#",
+    "#bbbbbbbbbbbbbbbb,,#",
+    "#ssssssssssssssss,,#",
+    "#~~~~~~~P~~~~~~~s,,#",
+    "#~~~~~~~~~~~~~~~s,X#",
+    "####################"],
+    marks:[{x:7,y:2,w:3,h:2,kind:"muenster",label:"St. Nikolaus"}],
+    lamps:[[4,10],[10,10],[16,10]]},
+  // FRIEDRICHSHAFEN — lange Uferpromenade, Zeppelin-Museum, Moleturm am Hafen
+  fhafen:{plan:[
+    "####################",
+    "#..,,,,,,,,,,,,,,..#",
+    "#.,,,,LLLL,,,,,,,,.#",
+    "#.,HH,LLLL,,,,HHH,.#",
+    "#.,HH,,,A,,,,,HHH,.#",
+    "#.,,,,,,,,,,,,,,C,.#",
+    "#.,,,,,,,,,,,,,,,,.#",
+    "#.ff,,,,,,,,,,,,ff,#",
+    "#bbbbbbbbbbbbbbbbbb#",
+    "#ssssssssssssssssss#",
+    "#~~~~~~bbb~~~~b~~~~#",
+    "#~~~~~~b~b~~~~b~~~~#",
+    "#~~~~~~bLb~~~~b~~~~#",
+    "#~~~~~~bPb~~~~X~~~~#",
+    "####################"],
+    marks:[{x:6,y:2,w:4,h:2,kind:"zeppelin",label:"Zeppelin-Museum"},
+           {x:8,y:12,w:1,h:1,kind:"moleturm",label:"Moleturm"}],
+    lamps:[[4,8],[10,8],[16,8]]},
+  // LINDAU — Inselstadt, Hafeneinfahrt mit Neuem Leuchtturm & Bayerischem Löwen
+  lindau:{plan:[
+    "~~~~~~~~~~~~~~~~~~~~",
+    "~~sssssssssssssss~~~",
+    "~s,,,,,,,,,,,,,,,s~~",
+    "~s,HH,,,,,,,,HH,,s~~",
+    "~s,HH,,,A,,,,HH,,s~~",
+    "~s,,,,,,,,,,,,,,,s~~",
+    "~s,,,,,,,,,,,,,C,s~~",
+    "~s,ff,,,,,,,,,,,,s~~",
+    "~s,,,,,,,,,,,,,,,s~~",
+    "~ssbbbbbbbbbbbbbss~~",
+    "~~~b~~~~~~~~~~b~~~~~",
+    "~~Lb~~~~~~~~~~bL~~~~",
+    "~~~b~~~~~~~~~~b~~~~~",
+    "~~~P~~~~~~~~~~X~~~~~",
+    "~~~~~~~~~~~~~~~~~~~~"],
+    marks:[{x:2,y:11,w:1,h:1,kind:"leuchtturm",label:"Leuchtturm"},
+           {x:15,y:11,w:1,h:1,kind:"loewe",label:"Bayer. Löwe"}],
+    lamps:[[6,9],[13,9]]},
+  // BREGENZ — Seebühne auf dem Wasser, Pfänder im Nordosten
+  bregenz:{plan:[
+    "########^^^^^^^^^^##",
+    "#..,,,,,^^^^^^^^^^.#",
+    "#.,,,,,,,,^^^^^^,,,#",
+    "#.,HH,,,,,,,,,,,,,.#",
+    "#.,HH,,,A,,,,HHH,,.#",
+    "#.,,,,,,,,,,,HHH,C.#",
+    "#.ff,,,,,,,,,,,,,,.#",
+    "#.,,,,,,,,,,,,,,ff,#",
+    "#bbbbbbbbbbbbbbbbbb#",
+    "#ssssssssssssssssss#",
+    "#~~~bbbbbb~~~~b~~~~#",
+    "#~~~bLLLLb~~~~b~~~~#",
+    "#~~~bLLLLb~~~~b~~~~#",
+    "#~~~P~~~~~~~~~X~~~~#",
+    "####################"],
+    marks:[{x:5,y:11,w:4,h:2,kind:"seebuehne",label:"Seebühne"}],
+    lamps:[[4,8],[11,8],[16,8]]},
+  // RAVENSBURG — ummauerte Altstadt, Mehlsack-Turm, Marktplatz, Schussen im Süden
+  ravensburg:{plan:[
+    "WWWWWWWWWWWWWWWWWWWW",
+    "W..,,,,,,,,,,,,,,..W",
+    "W.,,,,,,,LL,,,,,,,.W",
+    "W.,HH,,,,LL,,,HH,,.W",
+    "W.,HH,,,,,,,,,HH,,.W",
+    "W.,,,,,,,A,,,,,,,,.W",
+    "W.,,ff,,,,,,,,ff,,.W",
+    "W.,,,,,,,,,,,,,,C,.W",
+    "W.,,,,,,,,,,,,,,,,.W",
+    "WWWWWW,,,,,,,,WWWWWW",
+    "#..,,,,,,,,,,,,,,..#",
+    "#..ss~~~~~~~~~~ss..#",
+    "#..s~~~~P~~~~~~~s..#",
+    "#..,,,,,,,X,,,,,,..#",
+    "####################"],
+    marks:[{x:9,y:2,w:2,h:2,kind:"mehlsack",label:"Mehlsack"}],
+    lamps:[[5,5],[14,5],[9,9]]},
+};
+function buildCityMap(id){
+  const P=CITY_PLANS[id]||CITY_PLANS.konstanz;
+  return P.plan.map(row=>{
+    const arr=new Uint8Array(KW);
+    for(let x=0;x<KW;x++)arr[x]=CH[row[x]]??T_GRASS;
+    return arr;
+  });
+}
+const CITY_MAPS={};Object.keys(CITY_PLANS).forEach(id=>{CITY_MAPS[id]=buildCityMap(id);});
+function cityMap(id){return CITY_MAPS[id]||CITY_MAPS.konstanz;}
+function cityMarks(id){return (CITY_PLANS[id]||CITY_PLANS.konstanz).marks||[];}
+function cityLamps(id){return (CITY_PLANS[id]||CITY_PLANS.konstanz).lamps||[];}
+// Startposition = direkt über der Ausgangskachel
+function cityEntryPos(id){
+  const M=cityMap(id);
+  let ex=-1,ey=-1;
+  for(let y=KH-1;y>=0&&ex<0;y--)for(let x=0;x<KW;x++)if(M[y][x]===K_EXIT){ex=x;ey=y;break;}
+  if(ex<0)return {pos:{x:10*KTS+KTS/2,y:12*KTS+KTS/2},facing:"up"};
+  // Ringsuche um den Ausgang nach dem nächsten begehbaren Feld (Ausgang selbst ausgenommen)
+  for(let r=1;r<=6;r++)
+    for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+      if(Math.max(Math.abs(dx),Math.abs(dy))!==r)continue;
+      const nx=ex+dx,ny=ey+dy;
+      if(nx<0||ny<0||nx>=KW||ny>=KH)continue;
+      const t=M[ny][nx];
+      if(t===K_EXIT||SOLID.has(t))continue;
+      return {pos:{x:nx*KTS+KTS/2,y:ny*KTS+KTS/2},facing:dy>0?"up":"down"};
+    }
+  return {pos:{x:ex*KTS+KTS/2,y:ey*KTS+KTS/2},facing:"up"};
+}
+
+/* ───── STADT-KACHELN (16-Bit-Look) ───── */
+function drawCityTile(ctx,t,px,py,S,fr,gx=0,gy=0){
+  if(t===K_ARENA){
+    // Arena: Steinbau mit Säulen und Wimpel
+    ctx.fillStyle="#7c2d12";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#a8a29e";ctx.fillRect(px+1,py+S*.3,S-2,S*.7);
+    ctx.fillStyle="#78716c";for(let i=0;i<3;i++)ctx.fillRect(px+3+i*(S*.32),py+S*.38,S*.13,S*.55);
+    ctx.fillStyle="#b91c1c";ctx.beginPath();ctx.moveTo(px,py+S*.32);ctx.lineTo(px+S/2,py+2);ctx.lineTo(px+S,py+S*.32);ctx.fill();
+    ctx.fillStyle="#fde047";ctx.font=`bold ${S*.32|0}px sans-serif`;ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("⚔",px+S/2,py+S*.68);
+  }else if(t===K_CENTER){
+    ctx.fillStyle="#e2e8f0";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#cbd5e1";ctx.fillRect(px+1,py+1,S-2,S*.28);
+    ctx.fillStyle="#94a3b8";ctx.fillRect(px+1,py+S*.28,S-2,2);
+    const pulse=.55+Math.sin(fr*.06)*.3;
+    ctx.fillStyle=`rgba(239,68,68,${pulse})`;
+    ctx.fillRect(px+S*.42,py+S*.4,S*.16,S*.45);ctx.fillRect(px+S*.28,py+S*.53,S*.44,S*.16);
+  }else if(t===K_EXIT){
+    drawTile(ctx,T_PATH,px,py,S,fr,gx,gy);
+    ctx.fillStyle="rgba(253,224,71,.25)";ctx.fillRect(px+2,py+2,S-4,S-4);
+    ctx.fillStyle="#fde047";ctx.font=`bold ${S*.46|0}px sans-serif`;ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("▼",px+S/2,py+S*.55);
+  }else if(t===K_PIER){
+    drawCityTile(ctx,K_DECK,px,py,S,fr,gx,gy);
+    ctx.fillStyle="#fde047";ctx.font=`bold ${S*.34|0}px sans-serif`;ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("🎣",px+S/2,py+S*.5);
+  }else if(t===K_SEESTERN){
+    ctx.fillStyle="#4c1d95";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#6d28d9";ctx.fillRect(px+1,py+S*.32,S-2,S*.68);
+    ctx.fillStyle="#a78bfa";ctx.beginPath();ctx.moveTo(px-1,py+S*.34);ctx.lineTo(px+S/2,py+1);ctx.lineTo(px+S+1,py+S*.34);ctx.fill();
+    ctx.fillStyle="#fde047";ctx.fillRect(px+S*.36,py+S*.5,S*.28,S*.4);
+    ctx.fillStyle="#c4b5fd";ctx.fillRect(px+S*.12,py+S*.44,S*.16,S*.16);ctx.fillRect(px+S*.72,py+S*.44,S*.16,S*.16);
+  }else if(t===K_DECK){
+    // Holzsteg über Wasser
+    drawTile(ctx,T_WATER,px,py,S,fr,gx,gy);
+    ctx.fillStyle="#8b5a2b";ctx.fillRect(px,py+2,S,S-4);
+    ctx.fillStyle="#a16207";for(let i=0;i<3;i++)ctx.fillRect(px+1,py+3+i*(S*.31),S-2,S*.22);
+    ctx.fillStyle="#5c3317";ctx.fillRect(px,py+2,S,1);ctx.fillRect(px,py+S-3,S,1);
+  }else if(t===K_WALL){
+    // Stadtmauer mit Zinnen
+    ctx.fillStyle="#57534e";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#78716c";
+    for(let r=0;r<3;r++)for(let c=0;c<2;c++)ctx.fillRect(px+2+c*(S*.5)+(r%2?S*.25:0),py+3+r*(S*.32),S*.42,S*.26);
+    ctx.fillStyle="#44403c";ctx.fillRect(px,py,S,2);
+    ctx.fillStyle="#a8a29e";for(let i=0;i<3;i++)ctx.fillRect(px+i*(S*.36)+1,py,S*.22,3);
+  }else if(t===K_ROCK){
+    // Fels / Berghang (Pfänder)
+    ctx.fillStyle="#44403c";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#57534e";ctx.beginPath();ctx.moveTo(px,py+S);ctx.lineTo(px+S*.3,py+S*.25);ctx.lineTo(px+S*.62,py+S);ctx.fill();
+    ctx.fillStyle="#78716c";ctx.beginPath();ctx.moveTo(px+S*.4,py+S);ctx.lineTo(px+S*.72,py+S*.35);ctx.lineTo(px+S,py+S);ctx.fill();
+    ctx.fillStyle="#e7e5e4";ctx.beginPath();ctx.moveTo(px+S*.24,py+S*.36);ctx.lineTo(px+S*.3,py+S*.25);ctx.lineTo(px+S*.37,py+S*.37);ctx.fill();
+  }else if(t===K_FLOWER){
+    drawTile(ctx,T_GRASS,px,py,S,fr,gx,gy);
+    ctx.fillStyle="#3f2a14";ctx.fillRect(px+2,py+2,S-4,S-4);
+    const cols=["#fb7185","#fbbf24","#f472b6","#a3e635","#93c5fd"];
+    for(let r=0;r<3;r++)for(let c=0;c<3;c++){
+      ctx.fillStyle=cols[(gx+gy+r*3+c)%cols.length];
+      ctx.beginPath();ctx.arc(px+7+c*9,py+7+r*9,2.4,0,Math.PI*2);ctx.fill();
+    }
+  }else if(t===K_LAND){
+    // Sockel der Wahrzeichen – Detail kommt in drawCityDeco obendrauf
+    ctx.fillStyle="#6b7280";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#9ca3af";ctx.fillRect(px+1,py+1,S-2,S-2);
+  }else drawTile(ctx,t,px,py,S,fr,gx,gy);
+}
+
+/* ───── WAHRZEICHEN ───── */
+function drawLandmark(ctx,kind,x,y,w,h,fr){
+  const W=w*KTS,H=h*KTS,cx=x+W/2;
+  if(kind==="muenster"){ // Münster mit hohem Turm
+    ctx.fillStyle="#57534e";ctx.fillRect(x,y+H*.25,W,H*.75);
+    ctx.fillStyle="#78716c";ctx.fillRect(x+2,y+H*.3,W-4,H*.65);
+    ctx.fillStyle="#7f1d1d";ctx.beginPath();ctx.moveTo(x-2,y+H*.28);ctx.lineTo(cx,y+H*.05);ctx.lineTo(x+W+2,y+H*.28);ctx.fill();
+    ctx.fillStyle="#44403c";ctx.fillRect(cx-W*.13,y-H*.5,W*.26,H*.78);
+    ctx.fillStyle="#166534";ctx.beginPath();ctx.moveTo(cx-W*.16,y-H*.48);ctx.lineTo(cx,y-H*.95);ctx.lineTo(cx+W*.16,y-H*.48);ctx.fill();
+    ctx.fillStyle="#fde047";ctx.fillRect(cx-1.5,y-H*1.06,3,H*.12);ctx.fillRect(cx-5,y-H*1.0,10,3);
+    ctx.fillStyle="#1e293b";for(let i=0;i<3;i++){ctx.beginPath();ctx.arc(x+W*(.25+i*.25),y+H*.6,W*.06,Math.PI,0);ctx.fill();ctx.fillRect(x+W*(.25+i*.25)-W*.06,y+H*.6,W*.12,H*.3);}
+    ctx.fillStyle="#93c5fd";ctx.beginPath();ctx.arc(cx,y-H*.2,W*.07,0,Math.PI*2);ctx.fill();
+  }else if(kind==="konzil"){ // Konzilgebäude am Hafen
+    ctx.fillStyle="#a16207";ctx.fillRect(x,y+H*.22,W,H*.78);
+    ctx.fillStyle="#ca8a04";ctx.fillRect(x+2,y+H*.28,W-4,H*.68);
+    ctx.fillStyle="#7c2d12";ctx.beginPath();ctx.moveTo(x-3,y+H*.26);ctx.lineTo(cx,y-H*.06);ctx.lineTo(x+W+3,y+H*.26);ctx.fill();
+    ctx.fillStyle="#78350f";for(let r=0;r<2;r++)for(let c=0;c<4;c++)ctx.fillRect(x+W*.1+c*W*.22,y+H*.4+r*H*.26,W*.12,H*.16);
+    ctx.fillStyle="#e5e7eb";ctx.fillRect(x+W*.44,y+H*.7,W*.12,H*.3);
+  }else if(kind==="imperia"){ // Imperia-Statue auf dem Sockel
+    ctx.fillStyle="#57534e";ctx.fillRect(x+W*.2,y+H*.7,W*.6,H*.3);
+    const rot=Math.sin(fr*.012)*2;
+    ctx.save();ctx.translate(cx,y+H*.7);ctx.rotate(rot*Math.PI/180);
+    ctx.fillStyle="#d6d3d1";ctx.beginPath();ctx.moveTo(-W*.16,0);ctx.lineTo(-W*.07,-H*.42);ctx.lineTo(W*.07,-H*.42);ctx.lineTo(W*.16,0);ctx.fill();
+    ctx.fillStyle="#e7e5e4";ctx.beginPath();ctx.arc(0,-H*.5,W*.1,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fbbf24";ctx.fillRect(-W*.2,-H*.4,W*.12,H*.08);ctx.fillRect(W*.08,-H*.4,W*.12,H*.08);
+    ctx.restore();
+    ctx.fillStyle="#a8a29e";ctx.fillRect(x+W*.28,y+H*.66,W*.44,H*.06);
+  }else if(kind==="zeppelin"){ // Zeppelin-Museum mit Luftschiff
+    ctx.fillStyle="#57534e";ctx.fillRect(x,y+H*.3,W,H*.7);
+    ctx.fillStyle="#d6d3d1";ctx.fillRect(x+2,y+H*.34,W-4,H*.62);
+    ctx.fillStyle="#1e293b";for(let c=0;c<5;c++)ctx.fillRect(x+W*.08+c*W*.18,y+H*.44,W*.1,H*.3);
+    ctx.fillStyle="#7c2d12";ctx.fillRect(x,y+H*.26,W,H*.08);
+    const drift=Math.sin(fr*.02)*W*.06;
+    ctx.fillStyle="#cbd5e1";ctx.beginPath();ctx.ellipse(cx+drift,y-H*.12,W*.34,H*.16,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#94a3b8";ctx.beginPath();ctx.ellipse(cx+drift,y-H*.12,W*.34,H*.16,0,0,Math.PI);ctx.fill();
+    ctx.fillStyle="#475569";ctx.fillRect(cx+drift-W*.05,y-H*.02,W*.1,H*.07);
+    ctx.fillStyle="#64748b";ctx.beginPath();ctx.moveTo(cx+drift+W*.32,y-H*.12);ctx.lineTo(cx+drift+W*.42,y-H*.24);ctx.lineTo(cx+drift+W*.42,y-H*.01);ctx.fill();
+  }else if(kind==="moleturm"){ // Moleturm am Hafen
+    ctx.fillStyle="#e7e5e4";ctx.fillRect(x+W*.26,y-H*.5,W*.48,H*1.5);
+    ctx.fillStyle="#b91c1c";for(let i=0;i<3;i++)ctx.fillRect(x+W*.26,y-H*.36+i*H*.44,W*.48,H*.14);
+    ctx.fillStyle="#57534e";ctx.fillRect(x+W*.16,y-H*.66,W*.68,H*.18);
+    const gl=.55+Math.sin(fr*.09)*.35;
+    ctx.fillStyle=`rgba(253,224,71,${gl})`;ctx.beginPath();ctx.arc(cx,y-H*.78,W*.3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fde047";ctx.beginPath();ctx.arc(cx,y-H*.78,W*.14,0,Math.PI*2);ctx.fill();
+  }else if(kind==="leuchtturm"){ // Neuer Leuchtturm Lindau
+    ctx.fillStyle="#f5f5f4";ctx.fillRect(x+W*.22,y-H*.9,W*.56,H*1.9);
+    ctx.fillStyle="#d6d3d1";ctx.fillRect(x+W*.22,y-H*.9,W*.12,H*1.9);
+    ctx.fillStyle="#78716c";ctx.fillRect(x+W*.14,y-H*1.06,W*.72,H*.2);
+    ctx.fillStyle="#1e293b";ctx.fillRect(x+W*.3,y-H*1.24,W*.4,H*.2);
+    const gl=.5+Math.sin(fr*.11)*.4;
+    ctx.fillStyle=`rgba(253,224,71,${gl})`;ctx.beginPath();ctx.arc(cx,y-H*1.14,W*.34,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fde047";ctx.fillRect(x+W*.32,y-H*1.22,W*.36,H*.16);
+    ctx.fillStyle="#b91c1c";ctx.beginPath();ctx.moveTo(x+W*.24,y-H*1.24);ctx.lineTo(cx,y-H*1.42);ctx.lineTo(x+W*.76,y-H*1.24);ctx.fill();
+    ctx.fillStyle="#1e293b";for(let i=0;i<3;i++)ctx.fillRect(cx-W*.06,y-H*.6+i*H*.5,W*.12,H*.18);
+  }else if(kind==="loewe"){ // Bayerischer Löwe
+    ctx.fillStyle="#a8a29e";ctx.fillRect(x+W*.1,y+H*.6,W*.8,H*.4);
+    ctx.fillStyle="#78716c";ctx.fillRect(x+W*.14,y+H*.56,W*.72,H*.08);
+    ctx.fillStyle="#e7e5e4";
+    ctx.beginPath();ctx.ellipse(cx+W*.04,y+H*.3,W*.3,H*.2,0,0,Math.PI*2);ctx.fill();
+    ctx.fillRect(x+W*.2,y+H*.34,W*.12,H*.24);ctx.fillRect(x+W*.6,y+H*.34,W*.12,H*.24);
+    ctx.beginPath();ctx.arc(x+W*.26,y+H*.12,W*.19,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#d6d3d1";ctx.beginPath();ctx.arc(x+W*.26,y+H*.12,W*.25,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#e7e5e4";ctx.beginPath();ctx.arc(x+W*.26,y+H*.12,W*.17,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#57534e";ctx.beginPath();ctx.arc(x+W*.2,y+H*.1,W*.03,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(x+W*.32,y+H*.1,W*.03,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#e7e5e4";ctx.beginPath();ctx.moveTo(x+W*.78,y+H*.3);ctx.quadraticCurveTo(x+W*.98,y+H*.1,x+W*.88,y-H*.02);ctx.lineWidth=3;ctx.strokeStyle="#e7e5e4";ctx.stroke();
+  }else if(kind==="seebuehne"){ // Bregenzer Seebühne
+    ctx.fillStyle="#0c4a6e";ctx.fillRect(x,y+H*.55,W,H*.45);
+    ctx.fillStyle="#155e75";ctx.fillRect(x+2,y+H*.58,W-4,H*.38);
+    ctx.fillStyle="#78350f";ctx.fillRect(x,y+H*.5,W,H*.08);
+    for(let i=0;i<6;i++){ctx.fillStyle="#5c3317";ctx.fillRect(x+W*.06+i*W*.16,y+H*.58,W*.03,H*.42);}
+    ctx.fillStyle="#d97706";ctx.beginPath();ctx.arc(cx,y+H*.42,W*.36,Math.PI,0);ctx.fill();
+    ctx.fillStyle="#f59e0b";ctx.beginPath();ctx.arc(cx,y+H*.42,W*.28,Math.PI,0);ctx.fill();
+    ctx.fillStyle="#fde047";ctx.beginPath();ctx.arc(cx,y+H*.42,W*.16,Math.PI,0);ctx.fill();
+    for(let i=0;i<5;i++){const gl=.45+Math.sin(fr*.07+i)*.35;ctx.fillStyle=`rgba(253,224,71,${gl})`;
+      ctx.beginPath();ctx.arc(x+W*.14+i*W*.18,y+H*.2,W*.045,0,Math.PI*2);ctx.fill();}
+    ctx.fillStyle="#1e293b";ctx.fillRect(x+W*.44,y+H*.3,W*.12,H*.2);
+  }else if(kind==="mehlsack"){ // Mehlsack – weißer Rundturm Ravensburgs
+    ctx.fillStyle="#f5f5f4";ctx.fillRect(x+W*.24,y-H*1.1,W*.52,H*2.1);
+    ctx.fillStyle="#e7e5e4";ctx.fillRect(x+W*.24,y-H*1.1,W*.14,H*2.1);
+    ctx.fillStyle="#d6d3d1";for(let i=0;i<4;i++)ctx.fillRect(x+W*.24,y-H*.86+i*H*.52,W*.52,2);
+    ctx.fillStyle="#1e293b";for(let i=0;i<3;i++)ctx.fillRect(cx-W*.05,y-H*.7+i*H*.5,W*.1,H*.16);
+    ctx.fillStyle="#7f1d1d";ctx.beginPath();ctx.moveTo(x+W*.16,y-H*1.08);ctx.lineTo(cx,y-H*1.5);ctx.lineTo(x+W*.84,y-H*1.08);ctx.fill();
+    ctx.fillStyle="#991b1b";ctx.fillRect(x+W*.18,y-H*1.12,W*.64,H*.06);
+    ctx.fillStyle="#fde047";ctx.fillRect(cx-1.5,y-H*1.62,3,H*.14);
+    ctx.fillStyle="#fbbf24";ctx.beginPath();ctx.arc(cx,y-H*1.64,W*.07,0,Math.PI*2);ctx.fill();
+  }
+}
+function drawCityDeco(ctx,cityId,camX,camY,fr){
+  // Laternen
+  cityLamps(cityId).forEach(([x,y])=>{
+    const lx=x*KTS-camX+KTS/2,ly=y*KTS-camY+KTS/2;
+    ctx.fillStyle="#3f3f46";ctx.fillRect(lx-2,ly-6,4,20);
+    ctx.fillStyle="#52525b";ctx.fillRect(lx-4,ly+12,8,3);
+    const glow=.45+Math.sin(fr*.05+x)*.3;
+    ctx.fillStyle=`rgba(253,224,71,${glow*.5})`;ctx.beginPath();ctx.arc(lx,ly-10,10,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fde047";ctx.beginPath();ctx.arc(lx,ly-10,3.5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#a16207";ctx.beginPath();ctx.moveTo(lx-5,ly-12);ctx.lineTo(lx,ly-17);ctx.lineTo(lx+5,ly-12);ctx.fill();
+  });
+  // Wahrzeichen + Beschriftung
+  cityMarks(cityId).forEach(mk=>{
+    const px=mk.x*KTS-camX,py=mk.y*KTS-camY;
+    drawLandmark(ctx,mk.kind,px,py,mk.w,mk.h,fr);
+    if(mk.label){
+      ctx.font="bold 8px monospace";ctx.textAlign="center";ctx.textBaseline="top";
+      const lx=px+mk.w*KTS/2,ly=py+mk.h*KTS+3;
+      ctx.fillStyle="rgba(2,12,24,.72)";const tw=ctx.measureText(mk.label).width;
+      ctx.fillRect(lx-tw/2-3,ly-1,tw+6,11);
+      ctx.fillStyle="#e0f2fe";ctx.fillText(mk.label,lx,ly);
+    }
+  });
+}
+
+/* ───── TILE DRAW ───── */
+/* ───── AUTOTILING: weiche Übergänge zwischen Geländearten ─────
+   Zeichnet nach dem Grundtile die Kanten zu andersartigen Nachbarn.
+   "Rang" bestimmt, wer über wen läuft (höherer Rang überlagert). */
+const TERRAIN_RANK={[T_WATER]:0,[T_SAND]:1,[T_GRASS]:2,[T_PATH]:3};
+function terrainAt(map,x,y,W,H){
+  if(x<0||y<0||x>=W||y>=H)return null;
+  const t=map[y]?.[x];
+  return TERRAIN_RANK[t]!==undefined?t:null;
+}
+function edgeColors(t){
+  if(t===T_SAND)  return ["#d9b166","#c69a52"];
+  if(t===T_GRASS) return ["#1a6b34","#2f8f4a"];
+  if(t===T_PATH)  return ["#a97142","#8a5a2b"];
+  return null;
+}
+// Zeichnet die Übergangskanten der Kachel (gx,gy) auf ihre Nachbarn
+function drawAutotileEdges(ctx,map,t,px,py,S,fr,gx,gy,W,H){
+  const myRank=TERRAIN_RANK[t];
+  if(myRank===undefined)return;
+  const N=terrainAt(map,gx,gy-1,W,H), So=terrainAt(map,gx,gy+1,W,H),
+        E=terrainAt(map,gx+1,gy,W,H), Wt=terrainAt(map,gx-1,gy,W,H);
+  const sides=[[N,"n"],[So,"s"],[E,"e"],[Wt,"w"]];
+  // Höherrangige Nachbarn ragen in diese Kachel hinein
+  for(const [nb,dir] of sides){
+    if(nb===null||TERRAIN_RANK[nb]<=myRank)continue;
+    const cols=edgeColors(nb);if(!cols)continue;
+    const [c1,c2]=cols;
+    const d=Math.max(3,Math.round(S*0.18));
+    ctx.fillStyle=c1;
+    if(dir==="n")ctx.fillRect(px,py,S,d);
+    if(dir==="s")ctx.fillRect(px,py+S-d,S,d);
+    if(dir==="e")ctx.fillRect(px+S-d,py,d,S);
+    if(dir==="w")ctx.fillRect(px,py,d,S);
+    // Ausgefranste Kante: einzelne Pixel in Sekundärfarbe
+    ctx.fillStyle=c2;
+    const n=Math.round(S/4);
+    for(let i=0;i<n;i++){
+      const h=((gx*73856093)^(gy*19349663)^(i*83492791)^dir.charCodeAt(0))>>>0;
+      const j=(h%3);           // Tiefe der Ausfransung
+      const o=i*4+(h>>3)%2;    // Position entlang der Kante
+      if(o>=S)continue;
+      if(dir==="n")ctx.fillRect(px+o,py+d,2,j);
+      if(dir==="s")ctx.fillRect(px+o,py+S-d-j,2,j);
+      if(dir==="e")ctx.fillRect(px+S-d-j,py+o,j,2);
+      if(dir==="w")ctx.fillRect(px+d,py+o,j,2);
+    }
+  }
+  // Uferschaum: Wasser, das an Land grenzt
+  if(t===T_WATER){
+    const foam=(dir,nb)=>{
+      if(nb===null||nb===T_WATER)return;
+      const wob=Math.sin(fr*.07+gx*1.7+gy*2.1)*1.6;
+      ctx.fillStyle="rgba(226,244,255,.62)";
+      const th=3;
+      if(dir==="n")ctx.fillRect(px,py+1+wob*.4,S,th);
+      if(dir==="s")ctx.fillRect(px,py+S-th-1+wob*.4,S,th);
+      if(dir==="e")ctx.fillRect(px+S-th-1+wob*.4,py,th,S);
+      if(dir==="w")ctx.fillRect(px+1+wob*.4,py,th,S);
+      ctx.fillStyle="rgba(255,255,255,.35)";
+      for(let i=0;i<4;i++){
+        const h=((gx*2654435761)^(gy*40503)^(i*97))>>>0;
+        const o=(h%(S-4));
+        if(dir==="n")ctx.fillRect(px+o,py+4+wob*.4,2,1);
+        if(dir==="s")ctx.fillRect(px+o,py+S-5+wob*.4,2,1);
+        if(dir==="e")ctx.fillRect(px+S-5+wob*.4,py+o,1,2);
+        if(dir==="w")ctx.fillRect(px+4+wob*.4,py+o,1,2);
+      }
+    };
+    foam("n",N);foam("s",So);foam("e",E);foam("w",Wt);
+  }
+}
+
+function drawTile(ctx,t,px,py,S,fr,gx=0,gy=0){
+  const H=(a,b)=>((gx*73856093)^(gy*19349663)^(a*83492791)+b)>>>0; // stabiler Hash je Weltkachel
+  if(t===T_TREE){
+    // Waldboden + Baum mit Volumen
+    ctx.fillStyle="#123d12";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#0d2f0d";for(let i=0;i<4;i++){const h=H(i,7);ctx.fillRect(px+(h%S),py+((h>>4)%S),2,2);}
+    ctx.fillStyle="rgba(0,0,0,.3)";ctx.beginPath();ctx.ellipse(px+S/2,py+S*.9,S*.34,S*.1,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#5c3a1e";ctx.fillRect(px+S*.44,py+S*.66,S*.12,S*.28);
+    ctx.fillStyle="#3f2812";ctx.fillRect(px+S*.44,py+S*.66,S*.05,S*.28);
+    const sw=Math.sin(fr*.025+gx*1.3+gy*.7)*1.2;
+    ctx.fillStyle="#0f3d1f";ctx.beginPath();ctx.arc(px+S/2+sw,py+S*.56,S*.42,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#166534";ctx.beginPath();ctx.arc(px+S*.44+sw,py+S*.5,S*.34,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#22c55e";ctx.beginPath();ctx.arc(px+S*.4+sw,py+S*.38,S*.22,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#4ade80";ctx.beginPath();ctx.arc(px+S*.36+sw,py+S*.3,S*.1,0,Math.PI*2);ctx.fill();
+  }else if(t===T_GRASS){
+    // Zweifarbiger Grasteppich mit Büscheln, Halmen und seltenen Blumen
+    ctx.fillStyle="#1a6b34";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#175c2c";
+    for(let r=0;r<2;r++)for(let c=0;c<2;c++)if(((gx+gy+r+c)&1)===0)ctx.fillRect(px+c*S/2,py+r*S/2,S/2,S/2);
+    ctx.fillStyle="#2f8f4a";
+    [[4,6],[13,17],[22,8],[18,23],[8,13]].forEach(([bx,by],i)=>{
+      if((H(i,3)%5)<3){ctx.fillRect(px+bx,py+by,2,5);ctx.fillRect(px+bx-2,py+by+3,6,2);}
+    });
+    ctx.fillStyle="#3faa5c";for(let i=0;i<3;i++){const h=H(i,11);ctx.fillRect(px+(h%(S-3)),py+((h>>5)%(S-3)),1,3);}
+    const fh=((gx*7+gy*13)>>1)%23;
+    if(fh<3){const fc=["#fde047","#f9a8d4","#fca5a5"][fh%3];const fx=px+6+((gx*3+gy*5)%14),fy=py+8+((gx*5+gy)%12);
+      ctx.fillStyle="#166534";ctx.fillRect(fx,fy,1,4);
+      ctx.fillStyle=fc;ctx.beginPath();ctx.arc(fx,fy,1.9,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(fx+3,fy+2,1.7,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle="#fff7ae";ctx.fillRect(fx-0.5,fy-0.5,1,1);}
+  }else if(t===T_PATH){
+    // Kopfsteinpflaster
+    ctx.fillStyle="#8a5a2b";ctx.fillRect(px,py,S,S);
+    const stones=[[2,2,12,9],[16,3,13,8],[3,13,10,8],[15,13,14,9],[4,23,11,7],[17,24,12,6]];
+    stones.forEach(([sx,sy,sw2,sh],i)=>{
+      const v=H(i,5)%3;
+      ctx.fillStyle=["#a97142","#b58253","#9c6636"][v];
+      ctx.fillRect(px+sx,py+sy,sw2,sh);
+      ctx.fillStyle="rgba(255,235,200,.18)";ctx.fillRect(px+sx,py+sy,sw2,1);
+      ctx.fillStyle="rgba(60,30,10,.28)";ctx.fillRect(px+sx,py+sy+sh-1,sw2,1);
+    });
+  }else if(t===T_WATER){
+    // Tiefenverlauf + wandernde Lichtreflexe
+    const g=ctx.createLinearGradient(px,py,px,py+S);
+    g.addColorStop(0,"#0b4f7e");g.addColorStop(1,"#083a5f");
+    ctx.fillStyle=g;ctx.fillRect(px,py,S,S);
+    const t1=fr*.03;
+    ctx.strokeStyle="rgba(147,197,253,.20)";ctx.lineWidth=1.6;
+    [6,15,24].forEach((oy,i)=>{
+      ctx.beginPath();
+      for(let sx2=0;sx2<=S;sx2+=4){
+        const yy=py+oy+Math.sin((px+sx2)*.09+t1+i)*1.8;
+        sx2===0?ctx.moveTo(px,yy):ctx.lineTo(px+sx2,yy);
+      }
+      ctx.stroke();
+    });
+    const sparkle=(Math.sin(t1*2+gx*1.7+gy*2.3)+1)/2;
+    if(sparkle>.86){ctx.fillStyle="rgba(219,240,255,.75)";ctx.fillRect(px+((gx*5+gy*3)%(S-6))+3,py+((gx*7+gy)%(S-6))+3,2,2);}
+  }else if(t===T_SAND){
+    // Kiesiger Uferstreifen
+    ctx.fillStyle="#d9b166";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#c69a52";for(let r=0;r<2;r++)for(let c=0;c<2;c++)if(((gx+gy+r*2+c)&1)===0)ctx.fillRect(px+c*S/2,py+r*S/2,S/2,S/2);
+    for(let i=0;i<7;i++){const h=H(i,17);ctx.fillStyle=["#a97a3a","#e6c98d","#b98c46"][h%3];
+      ctx.fillRect(px+(h%(S-3)),py+((h>>6)%(S-3)),2,2);}
+  }else if(t===T_HOUSE){
+    // Fachwerk-Altstadthaus
+    ctx.fillStyle="#e8dcc8";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle="#8a2b2b";ctx.beginPath();ctx.moveTo(px-1,py+S*.42);ctx.lineTo(px+S/2,py+2);ctx.lineTo(px+S+1,py+S*.42);ctx.fill();
+    ctx.fillStyle="#a13333";for(let i=0;i<3;i++)ctx.fillRect(px+2,py+S*.14+i*S*.1,S-4,2);
+    ctx.fillStyle="#f5ecd9";ctx.fillRect(px+1,py+S*.42,S-2,S*.58);
+    ctx.fillStyle="#6b4423";
+    ctx.fillRect(px+1,py+S*.42,S-2,2);ctx.fillRect(px+1,py+S*.7,S-2,2);
+    ctx.fillRect(px+S*.46,py+S*.44,2,S*.26);
+    ctx.fillRect(px+2,py+S*.44,2,S*.54);ctx.fillRect(px+S-4,py+S*.44,2,S*.54);
+    ctx.fillStyle="#7dd3fc";ctx.fillRect(px+S*.14,py+S*.5,S*.22,S*.16);ctx.fillRect(px+S*.62,py+S*.5,S*.22,S*.16);
+    ctx.fillStyle="#5c3317";ctx.fillRect(px+S*.38,py+S*.74,S*.24,S*.26);
+    ctx.fillStyle="#fbbf24";ctx.fillRect(px+S*.56,py+S*.85,2,2);
+  }else if(t===T_OWPIER){
+    // Wasser drunter
+    drawTile(ctx,T_WATER,px,py,S,fr,gx,gy);
+    // Holzplanken
+    ctx.fillStyle="#78350f";ctx.fillRect(px+S*.18,py,S*.64,S);
+    ctx.fillStyle="#92400e";for(let i=0;i<4;i++)ctx.fillRect(px+S*.18,py+i*S*.26+2,S*.64,S*.16);
+    ctx.fillStyle="#5c2c0a";ctx.fillRect(px+S*.18,py,2,S);ctx.fillRect(px+S*.8,py,2,S);
+  }else if(t===T_WALOX){
+    drawTile(ctx,T_WATER,px,py,S,fr,gx,gy);
+    ctx.fillStyle="#78350f";ctx.fillRect(px+S*.18,py,S*.64,S*.7);
+    ctx.fillStyle="#92400e";for(let i=0;i<2;i++)ctx.fillRect(px+S*.18,py+i*S*.26+2,S*.64,S*.16);
+    ctx.fillStyle="#5c2c0a";ctx.fillRect(px+S*.18,py,2,S*.7);ctx.fillRect(px+S*.8,py,2,S*.7);
+  }else{
+    const cols={5:"#dc2626",6:"#2563eb",7:"#7c3aed",8:"#059669",9:"#d97706",13:"#0d9488"};
+    ctx.fillStyle="#a16207";ctx.fillRect(px,py,S,S);
+    ctx.fillStyle=cols[t]||"#fff";ctx.fillRect(px+3,py+3,S-6,S-6);
+    ctx.fillStyle="#0f172a";ctx.fillRect(px+S*.28|0,py+S*.22|0,S*.44|0,S*.78|0);
+    ctx.fillStyle="white";ctx.font=`bold ${S*.38|0}px sans-serif`;ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("▲",px+S/2,py+S*.35);
+  }
+}
+/* ───── PLAYER DRAW (gender aware) ───── */
+function drawPlayer(ctx,px,py,facing,moving,fr,gender="m"){
+  const f=gender==="f";
+  // 4-Phasen-Laufzyklus statt zwei – wirkt deutlich flüssiger
+  const ph=moving?Math.floor(fr/6)%4:0;
+  const legL=[0,3,0,-3][ph], legR=[0,-3,0,3][ph];
+  const bob=moving?[0,-1,0,-1][ph]:Math.round(Math.sin(fr*.05)*0.6); // leichtes Atmen im Stand
+  const armSw=moving?[0,2,0,-2][ph]:0;
+  const y=py+bob;
+
+  // Farben
+  const COAT=f?"#0f766e":"#1d4ed8", COAT_D=f?"#0b5b55":"#1e3a8a", COAT_L=f?"#14b8a6":"#3b82f6";
+  const SKIN="#f2c396", SKIN_SH="#d9a071";
+  const HAIR=f?"#4a2c12":"#3b2410", HAIR_L=f?"#6b4423":"#5c3a1e";
+  const PANTS="#1f2937", PANTS_D="#111827", BOOT="#3f2a17", BOOT_D="#2a1b0e";
+  const HAT="#a16207", HAT_D="#78350f", HAT_BAND=f?"#f472b6":"#166534";
+
+  // Schlagschatten
+  ctx.fillStyle="rgba(0,0,0,.32)";
+  ctx.beginPath();ctx.ellipse(px,py+11,9.5,3.6,0,0,Math.PI*2);ctx.fill();
+
+  // ── Beine ──
+  ctx.fillStyle=PANTS;   ctx.fillRect(px-6,y+2,5,8+legL); ctx.fillRect(px+1,y+2,5,8+legR);
+  ctx.fillStyle=PANTS_D; ctx.fillRect(px-6,y+2,2,8+legL); ctx.fillRect(px+1,y+2,2,8+legR);
+  // Stiefel mit Sohle
+  ctx.fillStyle=BOOT;    ctx.fillRect(px-7,y+10+legL,6,4); ctx.fillRect(px+1,y+10+legR,6,4);
+  ctx.fillStyle=BOOT_D;  ctx.fillRect(px-7,y+13+legL,6,1); ctx.fillRect(px+1,y+13+legR,6,1);
+
+  // ── Rumpf: Anglerweste über Pullover ──
+  ctx.fillStyle=COAT;   ctx.fillRect(px-8,y-10,16,13);
+  ctx.fillStyle=COAT_D; ctx.fillRect(px-8,y-10,4,13);          // Schattenseite
+  ctx.fillStyle=COAT_L; ctx.fillRect(px+5,y-10,3,13);          // Lichtkante
+  // Reißverschluss / Knopfleiste
+  ctx.fillStyle="#e2e8f0";ctx.fillRect(px-1,y-9,1,11);
+  // Westentaschen
+  ctx.fillStyle=COAT_D;ctx.fillRect(px-7,y-3,4,4);ctx.fillRect(px+3,y-3,4,4);
+  ctx.fillStyle="#facc15";ctx.fillRect(px-7,y-3,4,1);ctx.fillRect(px+3,y-3,4,1);
+  // Gurt quer über die Brust
+  ctx.fillStyle="#7c2d12";
+  if(facing==="left")      ctx.fillRect(px-8,y-7,13,2);
+  else if(facing==="right")ctx.fillRect(px-5,y-7,13,2);
+  else                     ctx.fillRect(px-8,y-6,16,2);
+
+  // ── Arme ──
+  ctx.fillStyle=COAT;
+  if(facing==="left"){ctx.fillRect(px-12,y-8+armSw,5,9);}
+  else if(facing==="right"){ctx.fillRect(px+7,y-8-armSw,5,9);}
+  else{ctx.fillRect(px-12,y-7+armSw,5,9);ctx.fillRect(px+7,y-7-armSw,5,9);}
+  // Hände
+  ctx.fillStyle=SKIN;
+  if(facing==="left"){ctx.fillRect(px-12,y+1+armSw,5,3);}
+  else if(facing==="right"){ctx.fillRect(px+7,y+1-armSw,5,3);}
+  else{ctx.fillRect(px-12,y+2+armSw,5,3);ctx.fillRect(px+7,y+2-armSw,5,3);}
+
+  // ── Hals & Kopf ──
+  ctx.fillStyle=SKIN_SH;ctx.fillRect(px-2,y-12,4,3);
+  ctx.fillStyle=SKIN;ctx.beginPath();ctx.arc(px,y-16,7.6,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=SKIN_SH;ctx.beginPath();ctx.arc(px-2.5,y-16,7.6,0,Math.PI*2);ctx.fill();  // Wangenschatten
+  ctx.fillStyle=SKIN;ctx.beginPath();ctx.arc(px+0.6,y-16.4,7,0,Math.PI*2);ctx.fill();
+  // Ohren
+  ctx.fillStyle=SKIN_SH;
+  if(facing!=="up"){ctx.fillRect(px-8,y-17,2,3);ctx.fillRect(px+6,y-17,2,3);}
+
+  // ── Haare ──
+  ctx.fillStyle=HAIR;
+  if(f){
+    ctx.fillRect(px-9,y-15,3,10);ctx.fillRect(px+6,y-15,3,10);   // seitliche Strähnen
+    ctx.fillRect(px-10,y-13,2,11);ctx.fillRect(px+8,y-13,2,11);
+    ctx.fillStyle=HAIR_L;ctx.fillRect(px-9,y-15,1,10);
+    ctx.fillStyle=HAIR;ctx.fillRect(px-4,y-22,8,4);              // Pony
+  }else{
+    ctx.fillRect(px-7,y-21,14,4);
+    ctx.fillStyle=HAIR_L;ctx.fillRect(px-7,y-21,14,1);
+    ctx.fillStyle=HAIR;ctx.fillRect(px-8,y-19,2,4);ctx.fillRect(px+6,y-19,2,4);
+  }
+
+  // ── Anglerhut ──
+  ctx.fillStyle=HAT_D;ctx.beginPath();ctx.ellipse(px,y-20,11,3.4,0,0,Math.PI*2);ctx.fill();  // Krempe
+  ctx.fillStyle=HAT;  ctx.beginPath();ctx.ellipse(px,y-21,11,3.2,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=HAT;  ctx.fillRect(px-6,y-27,12,6);                                          // Kopfteil
+  ctx.fillStyle=HAT_D;ctx.fillRect(px-6,y-27,3,6);
+  ctx.beginPath();ctx.ellipse(px,y-27,6,2.2,0,0,Math.PI*2);ctx.fillStyle=HAT;ctx.fill();
+  ctx.fillStyle=HAT_BAND;ctx.fillRect(px-6,y-23,12,2);                                       // Hutband
+  // Angelfliege am Hut
+  ctx.fillStyle="#ef4444";ctx.fillRect(px+5,y-24,2,2);
+  ctx.fillStyle="#fbbf24";ctx.fillRect(px+7,y-25,1,1);
+
+  // ── Gesicht ──
+  ctx.fillStyle="#1e1b16";
+  if(facing==="left"){
+    ctx.fillRect(px-5,y-17,2,2);
+    ctx.fillStyle="#fff";ctx.fillRect(px-5,y-17,1,1);
+  }else if(facing==="right"){
+    ctx.fillRect(px+3,y-17,2,2);
+    ctx.fillStyle="#fff";ctx.fillRect(px+4,y-17,1,1);
+  }else if(facing==="up"){
+    ctx.fillRect(px-4,y-19,2,2);ctx.fillRect(px+2,y-19,2,2);
+  }else{
+    ctx.fillRect(px-4,y-16,2,2);ctx.fillRect(px+2,y-16,2,2);
+    ctx.fillStyle="#fff";ctx.fillRect(px-4,y-16,1,1);ctx.fillRect(px+2,y-16,1,1);
+    ctx.fillStyle="#b45309";ctx.fillRect(px-1,y-12,3,1);        // Mund
+  }
+  // Wangenröte
+  if(facing!=="up"){ctx.fillStyle="rgba(239,68,68,.22)";ctx.fillRect(px-6,y-14,3,2);ctx.fillRect(px+3,y-14,3,2);}
+
+  // ── Angelrute mit Rolle und Schnur ──
+  const right=(facing==="right"||facing==="down");
+  const bx=right?px+9:px-9, by=y-5-armSw*(right?-1:1);
+  const tx=right?px+25:px-25, ty=y-23;
+  ctx.strokeStyle="#6b4423";ctx.lineWidth=2.4;ctx.lineCap="round";
+  ctx.beginPath();ctx.moveTo(bx,by);ctx.lineTo(tx,ty);ctx.stroke();
+  ctx.strokeStyle="#8b5a2b";ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(bx,by-0.5);ctx.lineTo(tx,ty-0.5);ctx.stroke();
+  // Rolle
+  ctx.fillStyle="#94a3b8";ctx.beginPath();ctx.arc(right?px+13:px-13,y-9,2.6,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#475569";ctx.beginPath();ctx.arc(right?px+13:px-13,y-9,1.2,0,Math.PI*2);ctx.fill();
+  // Schnur mit leichtem Durchhang
+  ctx.strokeStyle="rgba(226,232,240,.75)";ctx.lineWidth=0.9;
+  ctx.beginPath();ctx.moveTo(tx,ty);
+  ctx.quadraticCurveTo(tx+(right?5:-5),ty+9,tx+(right?4:-4),ty+15);ctx.stroke();
+  ctx.fillStyle="#ef4444";ctx.beginPath();ctx.arc(tx+(right?4:-4),ty+16,1.5,0,Math.PI*2);ctx.fill();
+}
+
+/* ───── WALOX surfacing in the lake (canvas) ───── */
+function drawWaloxOnMap(ctx,cx,cy,fr){
+  const bob=Math.sin(fr*.04)*4;
+  cy+=bob;
+  // ripple rings
+  for(let i=0;i<3;i++){const r=18+i*12+((fr*.6)%12);ctx.strokeStyle=`rgba(125,211,252,${.28-i*.08})`;ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(cx,cy+10,r,r*.4,0,0,Math.PI*2);ctx.stroke();}
+  // spout
+  ctx.strokeStyle="rgba(165,243,252,.85)";ctx.lineWidth=3;ctx.lineCap="round";
+  ctx.beginPath();ctx.moveTo(cx-14,cy-10);ctx.quadraticCurveTo(cx-18,cy-26-Math.abs(bob),cx-12,cy-34-Math.abs(bob));ctx.stroke();
+  // body (surfaced back)
+  const grad=ctx.createLinearGradient(cx,cy-14,cx,cy+14);grad.addColorStop(0,"#155e75");grad.addColorStop(1,"#0e7490");
+  ctx.fillStyle=grad;ctx.beginPath();ctx.ellipse(cx,cy,30,15,0,Math.PI,0,true);ctx.fill();
+  ctx.beginPath();ctx.ellipse(cx,cy,30,15,0,0,Math.PI);ctx.fillStyle="#0c4a6e";ctx.fill();
+  // dorsal fin
+  ctx.fillStyle="#155e75";ctx.beginPath();ctx.moveTo(cx+4,cy-12);ctx.quadraticCurveTo(cx+10,cy-24,cx+16,cy-11);ctx.fill();
+  // tail
+  ctx.fillStyle="#0e7490";ctx.beginPath();ctx.moveTo(cx+26,cy-2);ctx.quadraticCurveTo(cx+40,cy-12,cx+44,cy-4);ctx.quadraticCurveTo(cx+40,cy+2,cx+44,cy+8);ctx.quadraticCurveTo(cx+38,cy+4,cx+26,cy+4);ctx.fill();
+  // eye + sparkle
+  ctx.fillStyle="#0f172a";ctx.beginPath();ctx.arc(cx-16,cy-3,3.4,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#67e8f9";ctx.beginPath();ctx.arc(cx-16,cy-3,1.8,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#fde047";ctx.font="bold 12px sans-serif";ctx.textAlign="center";ctx.fillText("★",cx,cy-20-Math.abs(bob));
+  // label
+  ctx.fillStyle="rgba(34,211,238,.95)";ctx.font="bold 9px monospace";ctx.textAlign="center";ctx.textBaseline="bottom";
+  ctx.fillText("WALOX",cx,cy-30-Math.abs(bob));
+}
+/* ───── Strudel (nachdem Walox bezwungen) ───── */
+function drawStrudel(ctx,cx,cy,fr){
+  for(let i=0;i<4;i++){
+    const a=fr*.06+i*Math.PI/2;const rr=8+i*7;
+    ctx.strokeStyle=`rgba(125,211,252,${.6-i*.12})`;ctx.lineWidth=3-i*.4;
+    ctx.beginPath();
+    for(let t=0;t<Math.PI*1.6;t+=.2){const r=rr+t*3;ctx.lineTo(cx+Math.cos(t+a)*r,cy+Math.sin(t+a)*r*.6);}
+    ctx.stroke();
+  }
+  ctx.fillStyle="rgba(2,12,24,.7)";ctx.beginPath();ctx.ellipse(cx,cy,6,4,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="rgba(125,211,252,.95)";ctx.font="bold 9px monospace";ctx.textAlign="center";ctx.textBaseline="bottom";
+  ctx.fillText("STRUDEL",cx,cy-26);
+}
+
+/* ═══════════════════════════════════════════════════ MONSTER SPRITES ═══ */
+function MonSprite({monKey,size=80,flip=false,idle=false}){
+  const gid=`mg_${monKey}_${size}`;
+  const sp={
+    karpfi:(<svg viewBox="0 0 100 72" width={size} overflow="visible">
+      <defs><radialGradient id={gid} cx="38%" cy="40%"><stop offset="0%" stopColor="#60a5fa"/><stop offset="100%" stopColor="#1d4ed8"/></radialGradient></defs>
+      <path d="M72,22 L94,12 L97,37 L94,60 L72,50 Z" fill="#f97316" stroke="#c2410c" strokeWidth="1.2"/>
+      <ellipse cx="44" cy="37" rx="30" ry="21" fill={`url(#${gid})`} stroke="#1e3a8a" strokeWidth="1.5"/>
+      {[[18,24],[30,24],[42,24],[54,26],[18,34],[30,34],[42,34],[54,35]].map(([x,y],i)=>(<path key={i} d={`M${x},${y} a7,5 0 0,1 13,0`} fill="none" stroke="#93c5fd" strokeWidth="1" opacity="0.6"/>))}
+      <path d="M26,17 Q44,2 62,17" fill="#f97316" fillOpacity="0.9" stroke="#c2410c" strokeWidth="1"/>
+      <ellipse cx="42" cy="52" rx="18" ry="6" fill="#bfdbfe" opacity="0.45"/>
+      <path d="M30,54 Q20,66 14,60" fill="#fbbf24" stroke="#d97706" strokeWidth="1"/>
+      <circle cx="20" cy="33" r="7.5" fill="#0f172a"/><circle cx="20" cy="33" r="6.5" fill="#fbbf24"/>
+      <circle cx="20" cy="33" r="3.8" fill="#0f172a"/><circle cx="18.2" cy="31.2" r="1.5" fill="white"/>
+      <path d="M14,41 Q6,46 2,54" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round"/>
+      <path d="M14,43 Q5,49 1,58" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round"/>
+    </svg>),
+    hechtus:(<svg viewBox="-4 4 108 58" width={size} overflow="visible">
+      <defs><linearGradient id={gid} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#166534"/><stop offset="50%" stopColor="#16a34a"/><stop offset="100%" stopColor="#bbf7d0"/></linearGradient></defs>
+      <path d="M86,22 L102,12 L100,30 Z" fill="#4ade80" stroke="#16a34a" strokeWidth="1"/>
+      <path d="M86,42 L102,36 L100,52 Z" fill="#4ade80" stroke="#16a34a" strokeWidth="1"/>
+      <path d="M0,32 Q10,16 50,16 Q86,16 92,32 Q86,48 50,48 Q10,48 0,32 Z" fill={`url(#${gid})`} stroke="#14532d" strokeWidth="1.5"/>
+      <path d="M2,25 Q50,12 90,25" fill="none" stroke="#14532d" strokeWidth="10" opacity="0.45"/>
+      {[[26,20],[38,18],[52,20],[64,21],[36,36],[52,38]].map(([x,y],i)=>(<ellipse key={i} cx={x} cy={y} rx="3.5" ry="2.5" fill="#14532d" opacity="0.5"/>))}
+      <path d="M64,16 Q72,6 80,16" fill="#4ade80" stroke="#16a34a" strokeWidth="1"/>
+      <path d="M64,48 Q72,58 80,48" fill="#4ade80" stroke="#16a34a" strokeWidth="1"/>
+      <path d="M0,32 L-4,28 L-4,36 Z" fill="#16a34a" stroke="#14532d" strokeWidth="1"/>
+      <line x1="-2" y1="29" x2="1" y2="27.5" stroke="white" strokeWidth="1.2" strokeLinecap="round"/>
+      <line x1="1" y1="29.5" x2="3.5" y2="28" stroke="white" strokeWidth="1.2" strokeLinecap="round"/>
+      <circle cx="13" cy="26" r="6.5" fill="#0f172a"/><circle cx="13" cy="26" r="5.5" fill="#fde047"/>
+      <ellipse cx="13" cy="26" rx="2.2" ry="3.8" fill="#0f172a"/><circle cx="11.5" cy="24.5" r="1.1" fill="white"/>
+    </svg>),
+    barschi:(<svg viewBox="0 0 100 74" width={size} overflow="visible">
+      <defs><radialGradient id={gid} cx="42%" cy="43%"><stop offset="0%" stopColor="#ca8a04"/><stop offset="100%" stopColor="#713f12"/></radialGradient></defs>
+      <path d="M74,20 L96,12 L98,37 L96,62 L74,54 Z" fill="#ea580c" stroke="#9a3412" strokeWidth="1.2"/>
+      <ellipse cx="45" cy="37" rx="31" ry="23" fill={`url(#${gid})`} stroke="#713f12" strokeWidth="1.5"/>
+      {[18,26,34,42,50,58,66].map((x,i)=>(<rect key={i} x={x} y={14} width={4} height={46} fill="#1c1917" opacity="0.45" rx="2"/>))}
+      <polyline points="14,14 18,7 22,13 26,5 30,10 34,3 38,9 42,14" fill="none" stroke="#dc2626" strokeWidth="2" strokeLinejoin="round"/>
+      <line x1="14" y1="14" x2="42" y2="14" stroke="#dc2626" strokeWidth="1.5"/>
+      <path d="M46,14 Q58,5 68,14" fill="#fbbf24" fillOpacity="0.9" stroke="#d97706" strokeWidth="1"/>
+      <path d="M28,56 Q17,70 11,62" fill="#f97316" stroke="#ea580c" strokeWidth="1"/>
+      <circle cx="17" cy="31" r="8" fill="#0f172a"/><circle cx="17" cy="31" r="7" fill="#ef4444"/>
+      <circle cx="17" cy="31" r="4" fill="#0f172a"/><circle cx="15.2" cy="29.2" r="1.5" fill="white"/>
+    </svg>),
+    forellius:(<svg viewBox="0 4 100 62" width={size} overflow="visible">
+      <defs><linearGradient id={gid} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#15803d"/><stop offset="45%" stopColor="#94a3b8"/><stop offset="100%" stopColor="#f1f5f9"/></linearGradient></defs>
+      <path d="M76,22 L94,11 L92,30 Z" fill="#94a3b8" stroke="#64748b" strokeWidth="1"/>
+      <path d="M76,46 L94,38 L92,54 Z" fill="#94a3b8" stroke="#64748b" strokeWidth="1"/>
+      <ellipse cx="43" cy="34" rx="33" ry="19" fill={`url(#${gid})`} stroke="#64748b" strokeWidth="1.5"/>
+      <path d="M12,34 Q43,37 74,34" fill="none" stroke="#ec4899" strokeWidth="4.5" opacity="0.9"/>
+      {[[20,26],[30,30],[24,38],[38,26],[46,30],[54,27],[36,40],[52,39],[60,33]].map(([x,y],i)=>(<circle key={i} cx={x} cy={y} r="2.8" fill="#0f172a" opacity="0.65"/>))}
+      <path d="M24,15 Q40,3 56,15" fill="#166534" fillOpacity="0.9" stroke="#14532d" strokeWidth="1"/>
+      <circle cx="13" cy="30" r="7" fill="#0f172a"/><circle cx="13" cy="30" r="6" fill="#a3e635"/>
+      <circle cx="13" cy="30" r="3.5" fill="#0f172a"/><circle cx="11.5" cy="28.5" r="1.4" fill="white"/>
+    </svg>),
+    welsio:(<svg viewBox="0 0 100 80" width={size} overflow="visible">
+      <defs><radialGradient id={gid} cx="28%" cy="38%"><stop offset="0%" stopColor="#4b5563"/><stop offset="100%" stopColor="#111827"/></radialGradient></defs>
+      <path d="M22,16 Q50,11 82,20 L86,34 Q82,50 50,54 Q26,52 22,46 Z" fill={`url(#${gid})`} stroke="#030712" strokeWidth="1.5"/>
+      <path d="M0,22 Q8,13 22,16 L22,46 Q8,50 0,42 Z" fill={`url(#${gid})`} stroke="#030712" strokeWidth="1.5"/>
+      <path d="M34,11 Q44,3 52,11" fill="#374151" stroke="#1f2937" strokeWidth="1"/>
+      <path d="M80,20 L96,13 L95,34 L96,50 L80,48 Z" fill="#374151" stroke="#1f2937" strokeWidth="1"/>
+      <circle cx="9" cy="18" r="5" fill="#0f172a"/><circle cx="9" cy="18" r="4" fill="#6b7280"/>
+      <circle cx="9" cy="18" r="2.2" fill="#0f172a"/><circle cx="7.8" cy="17" r="0.9" fill="white"/>
+      {[[6,28,2,45],[12,28,8,45],[4,36,2,49],[8,38,6,51],[13,38,12,51],[17,37,17,51]].map(([x1,y1,x2,y2],i)=>(
+        <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#9ca3af" strokeWidth={i<2?2.2:1.6} strokeLinecap="round"/>
+      ))}
+    </svg>),
+    zanderan:(<svg viewBox="-2 6 106 60" width={size} overflow="visible">
+      <defs><linearGradient id={gid} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#92400e"/><stop offset="55%" stopColor="#b45309"/><stop offset="100%" stopColor="#fef9c3"/></linearGradient></defs>
+      <path d="M88,24 L104,13 L102,32 Z" fill="#d97706" stroke="#92400e" strokeWidth="1"/>
+      <path d="M88,44 L104,38 L102,56 Z" fill="#d97706" stroke="#92400e" strokeWidth="1"/>
+      <path d="M6,34 Q14,18 52,18 Q87,18 92,34 Q87,50 52,50 Q14,50 6,34 Z" fill={`url(#${gid})`} stroke="#92400e" strokeWidth="1.5"/>
+      {[30,40,50,60,70,80].map((x,i)=>(<rect key={i} x={x} y={18} width={3.5} height={32} fill="#451a03" opacity="0.32" rx="1.5"/>))}
+      <path d="M6,34 L0,29 L0,39 Z" fill="#b45309" stroke="#92400e" strokeWidth="1"/>
+      <polyline points="20,18 24,10 28,17 32,8 36,15 40,18" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinejoin="round"/>
+      <line x1="20" y1="18" x2="40" y2="18" stroke="#fbbf24" strokeWidth="1.5"/>
+      <path d="M52,18 Q62,9 72,18" fill="#d97706" fillOpacity="0.9" stroke="#92400e" strokeWidth="1"/>
+      <circle cx="13" cy="28" r="7.5" fill="#0f172a"/><circle cx="13" cy="28" r="6.5" fill="#f97316"/>
+      <ellipse cx="13" cy="28" rx="2.5" ry="4" fill="#0f172a"/><circle cx="11.2" cy="26.2" r="1.3" fill="white"/>
+    </svg>),
+    walox:(<svg viewBox="-4 0 116 72" width={size} overflow="visible">
+      <defs>
+        <linearGradient id={gid} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#0e7490"/><stop offset="55%" stopColor="#155e75"/><stop offset="100%" stopColor="#a5f3fc"/></linearGradient>
+        <radialGradient id={gid+"b"} cx="50%" cy="40%"><stop offset="0%" stopColor="#67e8f9"/><stop offset="100%" stopColor="#0891b2"/></radialGradient>
+      </defs>
+      
+      <path d="M20,10 Q18,2 22,1 Q24,6 26,2 Q28,7 30,3 Q31,9 28,12" fill="none" stroke="#a5f3fc" strokeWidth="2" strokeLinecap="round" opacity="0.85"/>
+      
+      <path d="M92,34 Q108,18 112,24 Q104,34 110,40 Q112,50 96,40 Z" fill="#0e7490" stroke="#155e75" strokeWidth="1.5"/>
+      
+      <path d="M8,38 Q10,16 44,16 Q86,16 94,37 Q86,56 44,56 Q12,56 8,38 Z" fill={`url(#${gid})`} stroke="#0c4a6e" strokeWidth="1.6"/>
+      
+      <path d="M14,44 Q44,62 88,44 Q80,57 44,57 Q16,57 14,44 Z" fill="#cffafe" opacity="0.55"/>
+      
+      {[40,44,48,52].map((y,i)=>(<path key={i} d={`M16,${y} Q30,${y+5} 46,${y+4}`} fill="none" stroke="#0c4a6e" strokeWidth="0.8" opacity="0.4"/>))}
+      
+      <path d="M44,50 Q50,64 60,60 Q54,52 52,48 Z" fill="#0e7490" stroke="#155e75" strokeWidth="1"/>
+      
+      <path d="M60,16 Q66,6 72,17" fill="#0e7490" stroke="#155e75" strokeWidth="1"/>
+      
+      <circle cx="20" cy="34" r="6.5" fill="#0f172a"/><circle cx="20" cy="34" r="5.3" fill={`url(#${gid+"b"})`}/>
+      <circle cx="20" cy="34" r="2.6" fill="#0f172a"/><circle cx="18.3" cy="32.3" r="1.3" fill="white"/>
+      
+      <path d="M8,42 Q18,47 30,46" fill="none" stroke="#0c4a6e" strokeWidth="1.4" strokeLinecap="round"/>
+      
+      <path d="M44,12 l2,-6 l2,6 l6,2 l-6,2 l-2,6 l-2,-6 l-6,-2 z" fill="#fde047" opacity="0.9"/>
+    </svg>),
+    koidrako:(<svg viewBox="0 0 104 78" width={size} overflow="visible">
+      <defs><linearGradient id={gid} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#1e3a8a"/><stop offset="55%" stopColor="#2563eb"/><stop offset="100%" stopColor="#93c5fd"/></linearGradient></defs>
+      <path d="M74,20 L98,6 L100,38 L98,66 L74,52 Z" fill="#1d4ed8" stroke="#1e3a8a" strokeWidth="1.4"/>
+      <path d="M70,14 Q84,2 92,14" fill="#60a5fa" stroke="#1e3a8a" strokeWidth="1"/>
+      <path d="M70,58 Q84,70 92,58" fill="#60a5fa" stroke="#1e3a8a" strokeWidth="1"/>
+      <ellipse cx="44" cy="38" rx="32" ry="23" fill={`url(#${gid})`} stroke="#172554" strokeWidth="1.6"/>
+      {[[16,24],[28,22],[40,23],[52,25],[18,36],[30,36],[42,37],[54,38]].map(([x,y],i)=>(<path key={i} d={`M${x},${y} a8,6 0 0,1 15,0`} fill="none" stroke="#bfdbfe" strokeWidth="1.1" opacity="0.6"/>))}
+      <path d="M20,15 L26,3 L32,14 L40,2 L46,14 L54,4 L60,15" fill="none" stroke="#facc15" strokeWidth="2.5" strokeLinejoin="round"/>
+      <path d="M24,60 Q16,74 9,66" fill="#1d4ed8" stroke="#1e3a8a" strokeWidth="1"/>
+      <circle cx="20" cy="33" r="9" fill="#0f172a"/><circle cx="20" cy="33" r="7.5" fill="#facc15"/>
+      <ellipse cx="20" cy="33" rx="3" ry="5" fill="#0f172a"/><circle cx="17.6" cy="30.6" r="1.8" fill="white"/>
+      <path d="M12,42 Q2,48 -2,60" fill="none" stroke="#60a5fa" strokeWidth="2.4" strokeLinecap="round"/>
+      <path d="M14,44 Q4,52 0,64" fill="none" stroke="#60a5fa" strokeWidth="2.4" strokeLinecap="round"/>
+    </svg>),
+    barrakoloss:(<svg viewBox="0 0 104 80" width={size} overflow="visible">
+      <defs><radialGradient id={gid} cx="42%" cy="42%"><stop offset="0%" stopColor="#fbbf24"/><stop offset="70%" stopColor="#b45309"/><stop offset="100%" stopColor="#7c2d12"/></radialGradient></defs>
+      <path d="M74,18 L98,8 L100,40 L98,66 L74,56 Z" fill="#c2410c" stroke="#7c2d12" strokeWidth="1.4"/>
+      <ellipse cx="44" cy="40" rx="33" ry="25" fill={`url(#${gid})`} stroke="#7c2d12" strokeWidth="1.8"/>
+      {[16,24,32,40,48,56,64].map((x,i)=>(<rect key={i} x={x} y={14} width={5} height={52} fill="#451a03" opacity="0.5" rx="2"/>))}
+      <path d="M14,14 L20,2 L26,12 L32,0 L38,12 L44,2 L50,12 L56,3 L62,14" fill="#f59e0b" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round"/>
+      <path d="M8,40 L0,34 L2,40 L0,46 Z" fill="#7c2d12"/>
+      <path d="M12,50 L4,52 M12,54 L5,58" stroke="#e5e7eb" strokeWidth="2" strokeLinecap="round"/>
+      <path d="M26,58 Q16,72 8,64" fill="#c2410c" stroke="#7c2d12" strokeWidth="1"/>
+      <circle cx="18" cy="34" r="9" fill="#0f172a"/><circle cx="18" cy="34" r="7.5" fill="#ef4444"/>
+      <circle cx="18" cy="34" r="4" fill="#0f172a"/><circle cx="15.8" cy="31.8" r="1.7" fill="white"/>
+      <path d="M60,20 Q70,10 78,22" fill="#f59e0b" stroke="#b45309" strokeWidth="1"/>
+    </svg>),
+    salmorai:(<svg viewBox="0 0 106 72" width={size} overflow="visible">
+      <defs><linearGradient id={gid} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#7f1d1d"/><stop offset="50%" stopColor="#ef4444"/><stop offset="100%" stopColor="#fecaca"/></linearGradient></defs>
+      <path d="M78,18 L102,4 L98,26 Z" fill="#dc2626" stroke="#7f1d1d" strokeWidth="1"/>
+      <path d="M78,50 L102,42 L98,62 Z" fill="#dc2626" stroke="#7f1d1d" strokeWidth="1"/>
+      <path d="M6,34 Q14,16 50,16 Q86,16 92,34 Q86,52 50,52 Q14,52 6,34 Z" fill={`url(#${gid})`} stroke="#7f1d1d" strokeWidth="1.6"/>
+      <path d="M10,34 Q50,22 90,34" fill="none" stroke="#fca5a5" strokeWidth="4" opacity="0.8"/>
+      <path d="M50,16 L58,4 L66,16 Z" fill="#b91c1c" stroke="#7f1d1d" strokeWidth="1"/>
+      <path d="M50,52 Q60,64 70,52" fill="#dc2626" stroke="#7f1d1d" strokeWidth="1"/>
+      <path d="M6,34 L-4,28 L-2,34 L-4,40 Z" fill="#b91c1c" stroke="#7f1d1d" strokeWidth="1"/>
+      <rect x="12" y="30" width="14" height="5" fill="#0f172a" opacity="0.85" rx="1"/>
+      <circle cx="17" cy="32.5" r="4.5" fill="#0f172a"/><circle cx="17" cy="32.5" r="3.3" fill="#fde047"/>
+      <ellipse cx="17" cy="32.5" rx="1.4" ry="2.4" fill="#0f172a"/>
+      <path d="M28,50 L24,60 M34,51 L31,62 M40,51 L38,62" stroke="#fca5a5" strokeWidth="1.4" strokeLinecap="round"/>
+    </svg>),
+    hechtaris:(<svg viewBox="-6 2 116 62" width={size} overflow="visible">
+      <defs><linearGradient id={gid} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#14532d"/><stop offset="50%" stopColor="#22c55e"/><stop offset="100%" stopColor="#dcfce7"/></linearGradient></defs>
+      <path d="M88,20 L108,6 L104,30 Z" fill="#16a34a" stroke="#14532d" strokeWidth="1"/>
+      <path d="M88,44 L108,38 L104,60 Z" fill="#16a34a" stroke="#14532d" strokeWidth="1"/>
+      <path d="M0,32 Q8,14 52,14 Q92,14 96,32 Q92,50 52,50 Q8,50 0,32 Z" fill={`url(#${gid})`} stroke="#052e16" strokeWidth="1.6"/>
+      <path d="M2,24 Q52,10 94,24" fill="none" stroke="#052e16" strokeWidth="10" opacity="0.45"/>
+      {[[26,20],[38,17],[52,19],[66,20],[36,36],[54,38],[70,34]].map(([x,y],i)=>(<ellipse key={i} cx={x} cy={y} rx="4" ry="2.8" fill="#052e16" opacity="0.5"/>))}
+      <path d="M40,14 L46,2 L52,13 L58,3 L64,14" fill="none" stroke="#fde047" strokeWidth="2.4" strokeLinejoin="round"/>
+      <path d="M60,50 Q70,62 80,50" fill="#16a34a" stroke="#14532d" strokeWidth="1"/>
+      <path d="M0,32 L-6,26 L-6,38 Z" fill="#16a34a" stroke="#052e16" strokeWidth="1"/>
+      <path d="M-6,26 Q-3,32 -6,38" fill="none" stroke="#052e16" strokeWidth="1.5"/>
+      <line x1="-4" y1="27" x2="0" y2="25" stroke="white" strokeWidth="1.4" strokeLinecap="round"/>
+      <line x1="0" y1="28" x2="4" y2="26" stroke="white" strokeWidth="1.4" strokeLinecap="round"/>
+      <line x1="-4" y1="37" x2="0" y2="39" stroke="white" strokeWidth="1.4" strokeLinecap="round"/>
+      <circle cx="14" cy="25" r="8" fill="#0f172a"/><circle cx="14" cy="25" r="6.6" fill="#fde047"/>
+      <ellipse cx="14" cy="25" rx="2.6" ry="4.4" fill="#0f172a"/><circle cx="12" cy="23" r="1.5" fill="white"/>
+    </svg>),
+    welsemoth:(<svg viewBox="-2 0 108 84" width={size} overflow="visible">
+      <defs><radialGradient id={gid} cx="30%" cy="38%"><stop offset="0%" stopColor="#6d28d9"/><stop offset="70%" stopColor="#3b0764"/><stop offset="100%" stopColor="#1e1b4b"/></radialGradient></defs>
+      <path d="M24,14 Q52,8 86,18 L92,34 Q88,54 52,58 Q28,56 24,48 Z" fill={`url(#${gid})`} stroke="#0f0524" strokeWidth="1.7"/>
+      <path d="M0,20 Q8,10 24,14 L24,48 Q8,54 0,44 Z" fill={`url(#${gid})`} stroke="#0f0524" strokeWidth="1.7"/>
+      {[[18,24],[32,20],[46,22],[60,22],[72,24],[26,38],[46,42],[66,38]].map(([x,y],i)=>(<circle key={i} cx={x} cy={y} r={2.8+i%2} fill="#c084fc" opacity="0.55"/>))}
+      <path d="M32,8 Q46,-2 58,9" fill="#4c1d95" stroke="#2e1065" strokeWidth="1"/>
+      <path d="M86,18 L102,10 L100,36 L102,56 L86,52 Z" fill="#4c1d95" stroke="#2e1065" strokeWidth="1"/>
+      <circle cx="10" cy="17" r="6" fill="#0f172a"/><circle cx="10" cy="17" r="4.8" fill="#c084fc"/>
+      <circle cx="10" cy="17" r="2.4" fill="#0f172a"/><circle cx="8.6" cy="15.8" r="1" fill="white"/>
+      <path d="M20,10 Q22,2 28,0" fill="none" stroke="#c084fc" strokeWidth="2" strokeLinecap="round"/>
+      {[[6,30,0,52],[13,30,8,54],[3,38,-1,58],[9,40,5,60],[15,40,13,60],[20,38,20,58]].map(([x1,y1,x2,y2],i)=>(
+        <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#d8b4fe" strokeWidth={i<2?2.6:1.8} strokeLinecap="round"/>
+      ))}
+      <path d="M0,26 Q10,34 0,42" fill="none" stroke="#0f0524" strokeWidth="2.2"/>
+    </svg>),
+    zanderex:(<svg viewBox="-4 2 114 66" width={size} overflow="visible">
+      <defs><linearGradient id={gid} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#7c2d12"/><stop offset="50%" stopColor="#ea580c"/><stop offset="100%" stopColor="#fed7aa"/></linearGradient></defs>
+      <path d="M92,22 L110,6 L106,32 Z" fill="#ea580c" stroke="#7c2d12" strokeWidth="1"/>
+      <path d="M92,46 L110,40 L106,64 Z" fill="#ea580c" stroke="#7c2d12" strokeWidth="1"/>
+      <path d="M4,34 Q12,16 54,16 Q92,16 98,34 Q92,52 54,52 Q12,52 4,34 Z" fill={`url(#${gid})`} stroke="#7c2d12" strokeWidth="1.7"/>
+      <path d="M6,25 Q54,11 96,25" fill="none" stroke="#431407" strokeWidth="10" opacity="0.45"/>
+      {[28,40,52,64,76].map((x,i)=>(<rect key={i} x={x} y={16} width={4.5} height={36} fill="#431407" opacity="0.38" rx="2"/>))}
+      <path d="M18,16 L24,4 L30,15 L36,2 L42,14 L48,4 L54,16" fill="none" stroke="#fbbf24" strokeWidth="2.6" strokeLinejoin="round"/>
+      <path d="M54,52 Q66,64 78,52" fill="#ea580c" stroke="#7c2d12" strokeWidth="1"/>
+      <path d="M4,34 L-4,28 L-2,34 L-4,40 Z" fill="#c2410c" stroke="#7c2d12" strokeWidth="1"/>
+      <path d="M8,42 L2,46 M14,44 L9,49" stroke="white" strokeWidth="1.6" strokeLinecap="round"/>
+      <circle cx="16" cy="28" r="8.5" fill="#0f172a"/><circle cx="16" cy="28" r="7" fill="#fbbf24"/>
+      <ellipse cx="16" cy="28" rx="2.8" ry="4.6" fill="#0f172a"/><circle cx="13.8" cy="25.8" r="1.6" fill="white"/>
+    </svg>),
+  };
+  const s=sp[monKey];if(!s)return<span style={{fontSize:size*.6}}>?</span>;
+  return(
+    <div style={{display:"inline-flex",alignItems:"center",justifyContent:"center",
+      transform:flip?"scaleX(-1)":"none",
+      animation:idle?"monIdle 2.2s ease-in-out infinite alternate":"none",
+      filter:"drop-shadow(0 4px 8px #00000060)"}}>
+      {s}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ CHARACTER CREATE ═══ */
+function CharacterScreen({onDone}){
+  const [name,setName]=useState("");
+  const [gender,setGender]=useState("m");
+  const [err,setErr]=useState("");
+  const canvasRef=useRef(null);
+  useEffect(()=>{
+    const c=canvasRef.current;if(!c)return;
+    c.width=100;c.height=110;
+    const ctx=c.getContext("2d");
+    ctx.imageSmoothingEnabled=false;
+    ctx.fillStyle="#041624";ctx.fillRect(0,0,100,110);
+    // simple ground
+    ctx.fillStyle="#92400e";ctx.fillRect(20,88,60,4);
+    drawPlayer(ctx,50,80,"down",false,0,gender);
+  },[gender]);
+  function submit(){
+    const n=name.trim();
+    if(!n){setErr("Bitte einen Namen eingeben!");return;}
+    onDone(n,gender);
+  }
+  return(
+    <div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(ellipse at 50% 70%,#062040,#020c18)",padding:20,gap:14}}>
+      <div style={{color:"#38bdf8",fontSize:"clamp(9px,2vw,16px)",textShadow:"0 0 20px #0284c7",marginBottom:4}}>CHARAKTER ERSTELLEN</div>
+      <canvas ref={canvasRef} style={{border:"1px solid #1e5a8a",borderRadius:6,imageRendering:"pixelated"}}/>
+      <div style={{display:"flex",gap:8}}>
+        {["m","f"].map(g=>(
+          <button key={g} onClick={()=>{AUDIO.sfx("click");setGender(g);}} style={{background:gender===g?"#062040":"#020c18",border:`2px solid ${gender===g?(g==="f"?"#f472b6":"#38bdf8"):"#1e3a5a"}`,color:gender===g?(g==="f"?"#f9a8d4":"#38bdf8"):"#334155",fontFamily:"'Press Start 2P',monospace",fontSize:"clamp(6px,1.1vw,9px)",padding:"8px 14px",cursor:"pointer",borderRadius:4}}>
+            {g==="m"?"♂ MÄNNLICH":"♀ WEIBLICH"}
+          </button>
+        ))}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+        <div style={{color:"#475569",fontSize:"clamp(5px,.9vw,8px)"}}>DEIN NAME (max 12 Zeichen)</div>
+        <input value={name} onChange={e=>setName(e.target.value.slice(0,12))} onKeyDown={e=>e.key==="Enter"&&submit()}
+          placeholder="z.B. Marina" maxLength={12} autoFocus
+          style={{background:"#041624",border:"2px solid #1e5a8a",color:"#e0f2fe",fontFamily:"'Press Start 2P',monospace",fontSize:"clamp(9px,1.8vw,14px)",padding:"10px 16px",outline:"none",width:220,textAlign:"center",borderRadius:2}}/>
+        {err&&<div style={{color:"#f87171",fontSize:"clamp(5px,.8vw,7px)"}}>{err}</div>}
+      </div>
+      <button onClick={()=>{AUDIO.unlock();AUDIO.sfx("click");submit();}} style={{background:"#062040",border:"2px solid #38bdf8",color:"#38bdf8",fontFamily:"'Press Start 2P',monospace",fontSize:"clamp(8px,1.4vw,11px)",padding:"12px 28px",cursor:"pointer",boxShadow:"0 0 20px #0284c750",marginTop:4}}>
+        ▶ ABENTEUER STARTEN
+      </button>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ STARTER WAHL ═══ */
+function StarterScreen({playerName,onPick}){
+  const starters=["karpfi","barschi","forellius"];
+  const [sel,setSel]=useState(null);
+  return(
+    <div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(ellipse at 50% 60%,#062040,#020c18)",padding:18,gap:12,overflowY:"auto"}}>
+      <div style={{fontSize:"clamp(40px,8vw,70px)",filter:"drop-shadow(0 0 15px #0284c7)"}}>🧑‍🔬</div>
+      <div style={{color:"#38bdf8",fontSize:"clamp(7px,1.4vw,11px)",textAlign:"center",lineHeight:1.9,maxWidth:420}}>Prof. Seestern: „Wähle dein erstes Aquariummon, {playerName||"Angler"}!"</div>
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center"}}>
+        {starters.map(k=>{const mon=MONS[k];const on=sel===k;return(
+          <button key={k} onClick={()=>{AUDIO.sfx("click");setSel(k);}} style={{background:on?"#062040":"#041624",border:`2px solid ${on?mon.color:"#1e3a5a"}`,borderRadius:8,padding:"10px 8px",width:104,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:4,fontFamily:"inherit",boxShadow:on?`0 0 16px ${mon.color}66`:"none"}}>
+            <div style={{filter:`drop-shadow(0 0 8px ${mon.color})`}}><MonSprite monKey={k} size={56}/></div>
+            <div style={{color:mon.color,fontSize:"clamp(6px,1.1vw,9px)"}}>{mon.name}</div>
+            <div style={{color:"#64748b",fontSize:"clamp(4px,.7vw,6px)",lineHeight:1.5,textAlign:"center"}}>{mon.type}<br/>HP{mon.maxHp} A{mon.atk} D{mon.def}</div>
+          </button>
+        );})}
+      </div>
+      <button onClick={()=>{if(sel){AUDIO.sfx("catch");onPick(sel);}}} disabled={!sel} style={{background:"#062040",border:`2px solid ${sel?"#4ade80":"#1e3a5a"}`,color:sel?"#4ade80":"#334155",fontFamily:"'Press Start 2P',monospace",fontSize:"clamp(8px,1.4vw,11px)",padding:"12px 26px",cursor:sel?"pointer":"default",marginTop:4,opacity:sel?1:.6}}>
+        {sel?`▶ ${MONS[sel].name} wählen`:"Wähle ein Aquariummon"}
+      </button>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ TITLE ═══ */
+function TitleScreen({onNewGame,onLoad,savedName}){
+  const [t,setT]=useState(0);
+  useEffect(()=>{const i=setInterval(()=>setT(x=>x+1),80);return()=>clearInterval(i);},[]);
+  const blink=Math.floor(t/7)%2===0;
+  return(
+    <div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(ellipse at 50% 75%,#062040,#020c18)",position:"relative",overflow:"hidden"}}>
+      {[...Array(10)].map((_,i)=><div key={i} style={{position:"absolute",bottom:`${(t*.35+i*11)%108}%`,left:`${8+i*9}%`,width:`${3+i%4}px`,height:`${3+i%4}px`,borderRadius:"50%",border:"1px solid #1e6a9a",opacity:.25}}/>)}
+      <div style={{zIndex:1,textAlign:"center",padding:"20px",userSelect:"none"}}>
+        <div style={{color:"#7dd3fc",fontSize:"clamp(9px,2.2vw,18px)",letterSpacing:"3px",marginBottom:"4px",textShadow:"0 0 25px #0ea5e9"}}>AQUARIUMMON</div>
+        <div style={{color:"#38bdf8",fontSize:"clamp(14px,4vw,34px)",marginBottom:"2px",textShadow:"0 0 35px #0284c7"}}>BODENSEE</div>
+        <div style={{color:"#7dd3fc",fontSize:"clamp(8px,1.8vw,14px)",marginBottom:"36px",letterSpacing:"4px",opacity:.75}}>ABENTEUER</div>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
+          <button onClick={()=>{AUDIO.unlock();AUDIO.sfx("click");onNewGame();}} style={{background:"#062040",border:"1px solid #38bdf8",color:"#38bdf8",fontFamily:"'Press Start 2P',monospace",padding:"14px 32px",fontSize:"clamp(8px,1.6vw,13px)",cursor:"pointer",boxShadow:"0 0 20px #0284c750",opacity:blink?1:.65}}>▶ NEUES SPIEL</button>
+          {savedName&&<button onClick={()=>{AUDIO.unlock();AUDIO.sfx("click");onLoad();}} style={{background:"#0a1a10",border:"1px solid #4ade80",color:"#4ade80",fontFamily:"'Press Start 2P',monospace",padding:"10px 24px",fontSize:"clamp(7px,1.3vw,11px)",cursor:"pointer"}}>📁 LADEN — {savedName}</button>}
+        </div>
+        <div style={{color:"#1e40af",fontSize:"clamp(5px,.8vw,7px)",marginTop:"16px",opacity:.7}}>Von Konstanz bis Bregenz · Erkunde den Bodensee!</div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ DIALOGUE ═══ */
+function DialogueScreen({state,playerName,playerGender,onNext}){
+  const ev=state.events[state.idx];
+  const [shown,setShown]=useState("");const [done,setDone]=useState(false);
+  const ico=ev.ico;
+  const spkRaw=ev.spk;
+  const spk=spkRaw==="PLAYER"?(playerName||"Du"):spkRaw;
+  useEffect(()=>{setShown("");setDone(false);let i=0;const ti=setInterval(()=>{i++;setShown(ev.txt.slice(0,i));if(i>=ev.txt.length){clearInterval(ti);setDone(true);}},26);return()=>clearInterval(ti);},[state.idx,ev.txt]);
+  const click=()=>{if(!done){setShown(ev.txt);setDone(true);}else onNext();};
+  return(
+    <div onClick={click} style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",background:"linear-gradient(180deg,#020c18,#041624)",cursor:"pointer",padding:"16px",justifyContent:"flex-end",userSelect:"none"}}>
+      <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"10px"}}>
+        <div style={{fontSize:"clamp(50px,10vw,90px)",filter:"drop-shadow(0 0 15px #0284c7)"}}>{ico}</div>
+        <div style={{color:"#1e4a7a",fontSize:"clamp(5px,.8vw,7px)"}}>[{state.idx+1}/{state.events.length}]</div>
+      </div>
+      <div style={{border:"1px solid #1e5a8a",background:"rgba(2,12,24,.97)",padding:"16px 20px",maxWidth:"680px",margin:"0 auto",width:"100%"}}>
+        <div style={{color:"#38bdf8",fontSize:"clamp(6px,1.2vw,10px)",marginBottom:"10px"}}>{spkRaw==="PLAYER"?(playerGender==="f"?"👧":"👦"):ico} {spk}</div>
+        <div style={{color:"#e0f2fe",fontSize:"clamp(7px,1.3vw,11px)",lineHeight:2,minHeight:"44px"}}>{shown}{!done&&<span style={{animation:"blink .55s infinite"}}>|</span>}</div>
+        <div style={{textAlign:"right",fontSize:"clamp(5px,.8vw,8px)",color:"#38bdf8",marginTop:"8px",opacity:done?1:0}}>{state.idx<state.events.length-1?"► WEITER":"► SCHLIESSEN"}</div>
+      </div>
+      <style>{`@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ OVERWORLD ═══ */
+function OverworldScreen({player,onEnterTown,onWild,onMenu,canEnter,onWalox,onStrudel}){
+  const canvasRef=useRef(null);
+  const posRef=useRef({...OW.pos});
+  const facingRef=useRef(OW.facing);
+  const keysRef=useRef({});
+  const stepRef=useRef(0);
+  const lastTRef=useRef({x:Math.floor(OW.pos.x/TS),y:Math.floor(OW.pos.y/TS)});
+  const rafRef=useRef(null);
+  const [,redraw]=useState(0);
+  const [msg,setMsg]=useState("");
+  const msgTRef=useRef(null);
+  const genderRef=useRef(player.gender);
+  const liveRef=useRef(player);liveRef.current=player;
+
+  function showMsg(txt){setMsg(txt);clearTimeout(msgTRef.current);msgTRef.current=setTimeout(()=>setMsg(""),2200);}
+  useEffect(()=>{
+    const dn=e=>{keysRef.current[e.key]=true;["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)&&e.preventDefault();};
+    const up=e=>{keysRef.current[e.key]=false;};
+    window.addEventListener("keydown",dn);window.addEventListener("keyup",up);
+    return()=>{window.removeEventListener("keydown",dn);window.removeEventListener("keyup",up);};
+  },[]);
+  useEffect(()=>{
+    const canvas=canvasRef.current;if(!canvas)return;
+    canvas.width=canvas.clientWidth;canvas.height=canvas.clientHeight;
+    const ctx=canvas.getContext("2d");
+    ctx.imageSmoothingEnabled=false;
+    let frame=0;const SPEED=2.4;
+    const loop=()=>{
+      frame++;
+      const k=keysRef.current;
+      let dx=0,dy=0;
+      if(k["ArrowLeft"]||k["a"]||k["A"]){dx=-SPEED;facingRef.current="left";}
+      if(k["ArrowRight"]||k["d"]||k["D"]){dx=SPEED;facingRef.current="right";}
+      if(k["ArrowUp"]||k["w"]||k["W"]){dy=-SPEED;facingRef.current="up";}
+      if(k["ArrowDown"]||k["s"]||k["S"]){dy=SPEED;facingRef.current="down";}
+      if(dx&&dy){dx*=.707;dy*=.707;}
+      const moving=!!(dx||dy);
+      if(moving){
+        const nx=posRef.current.x+dx,ny=posRef.current.y+dy;
+        const corners=[[nx-9,ny-5],[nx+9,ny-5],[nx-9,ny+9],[nx+9,ny+9]];
+        const ok=corners.every(([cx,cy])=>{const tx=Math.floor(cx/TS),ty=Math.floor(cy/TS);const t2=THE_MAP[ty]?.[tx];return t2!==undefined&&t2!==T_TREE&&t2!==T_WATER&&t2!==T_HOUSE;});
+        if(ok){
+          posRef.current={x:nx,y:ny};OW.pos={...posRef.current};OW.facing=facingRef.current;
+          const tx=Math.floor(nx/TS),ty=Math.floor(ny/TS);
+          const last=lastTRef.current;
+          if(tx!==last.x||ty!==last.y){
+            lastTRef.current={x:tx,y:ty};
+            const tile=THE_MAP[ty]?.[tx];
+            if(tile===T_GRASS){stepRef.current++;if(stepRef.current>6&&Math.random()<0.22){stepRef.current=0;let pool;if(tx<22){pool=ty<18?["karpfi","forellius"]:["karpfi","barschi"];}else if(tx<36){pool=ty<18?["hechtus","forellius"]:["barschi","karpfi"];}else if(tx<48){pool=ty<18?["hechtus","zanderan"]:["hechtus","forellius"];}else{pool=ty<20?["zanderan","hechtus"]:["welsio","zanderan"];}AUDIO.sfx("encounter");cancelAnimationFrame(rafRef.current);onWild(pool[Math.floor(Math.random()*pool.length)]);return;}}else{stepRef.current=0;}
+            const cid=ENTRANCE[tile];if(cid){const city=CITIES.find(c=>c.id===cid);if(city){const reason=canEnter?canEnter(city):null;if(reason){AUDIO.sfx("deny");lastTRef.current={x:tx,y:ty};showMsg(reason,2600);}else{cancelAnimationFrame(rafRef.current);showMsg(`→ ${city.name}`);setTimeout(()=>onEnterTown(city),350);return;}}}
+            if(tile===T_WALOX){
+              if(player.waloxDefeated){cancelAnimationFrame(rafRef.current);setTimeout(()=>onStrudel(),250);return;}
+              else if(!player.waloxUnlocked){showMsg("Die Mitte des Sees liegt still da...");}
+              else if(liveRef.current.team.every(m=>(m.level||1)<MAXLV)){showMsg("Etwas Gewaltiges regt sich in der Tiefe! Komm mit einem Aquariummon auf Lv3 wieder.",3000);}
+              else if(liveRef.current.team.length>=3&&(liveRef.current.box?.length||0)>=BOX_MAX){showMsg("🐳 Box voll! Walox braucht Platz – lass erst ein Aquariummon frei.",3000);}
+              else{cancelAnimationFrame(rafRef.current);AUDIO.sfx("legend");showMsg("⭐ WALOX erhebt sich!");setTimeout(()=>onWalox(),550);return;}
+            }
+          }
+        }
+      }
+      const W=canvas.width,H=canvas.height;
+      ctx.fillStyle="#020c18";ctx.fillRect(0,0,W,H);
+      const camX=Math.max(0,Math.min(posRef.current.x-W/2,(MAP_W-1)*TS-W));
+      const camY=Math.max(0,Math.min(posRef.current.y-H/2,(MAP_H-1)*TS-H));
+      const sx=Math.floor(camX/TS),sy=Math.floor(camY/TS),ex=Math.ceil((camX+W)/TS)+1,ey=Math.ceil((camY+H)/TS)+1;
+      for(let ty2=sy;ty2<ey;ty2++)for(let tx2=sx;tx2<ex;tx2++){
+        if(ty2<0||ty2>=MAP_H||tx2<0||tx2>=MAP_W)continue;
+        const tt=THE_MAP[ty2]?.[tx2]??0, ppx=tx2*TS-camX, ppy=ty2*TS-camY;
+        drawTile(ctx,tt,ppx,ppy,TS,frame,tx2,ty2);
+        drawAutotileEdges(ctx,THE_MAP,tt,ppx,ppy,TS,frame,tx2,ty2,MAP_W,MAP_H);
+      }
+      CITIES.forEach(c=>{
+        if(c.id==="ravensburg"&&!player.waloxDefeated)return;
+        const beaten=player.beaten?.includes(c.id);
+        const lx=c.x*TS-camX+TS/2,ly=c.y*TS-camY-8;
+        if(lx<-60||lx>W+60||ly<-30||ly>H+30)return;
+        const nm=c.name+(beaten?" ✓":"");
+        ctx.font="bold 10px monospace";ctx.textAlign="center";ctx.textBaseline="bottom";
+        const tw=ctx.measureText(nm).width;
+        ctx.fillStyle="rgba(2,12,24,.8)";ctx.fillRect(lx-tw/2-5,ly-12,tw+10,14);
+        ctx.strokeStyle=beaten?"rgba(0,230,118,.6)":"rgba(251,191,36,.6)";ctx.lineWidth=1;
+        ctx.strokeRect(lx-tw/2-5,ly-12,tw+10,14);
+        ctx.fillStyle=beaten?"#4ade80":"#fbbf24";ctx.fillText(nm,lx,ly);
+      });
+      if(player.waloxDefeated){const sx2=WALOX_TILE.x*TS-camX+TS/2,sy2=WALOX_TILE.y*TS-camY+TS/2;if(sx2>-60&&sx2<W+60&&sy2>-60&&sy2<H+60)drawStrudel(ctx,sx2,sy2,frame);}
+      else if(player.waloxUnlocked){const wsx=WALOX_TILE.x*TS-camX+TS/2,wsy=(WALOX_TILE.y-2)*TS-camY+TS/2;if(wsx>-60&&wsx<W+60&&wsy>-60&&wsy<H+60)drawWaloxOnMap(ctx,wsx,wsy,frame);}
+      drawPlayer(ctx,posRef.current.x-camX,posRef.current.y-camY,facingRef.current,moving,frame,genderRef.current);
+      // Minimap
+      const mm=48,mms=mm/Math.max(MAP_W,MAP_H),mmx=W-mm-8,mmy=8;
+      ctx.fillStyle="rgba(2,12,24,.75)";ctx.fillRect(mmx-2,mmy-2,mm+4,mm+4);
+      ctx.strokeStyle="#1e5a8a";ctx.lineWidth=1;ctx.strokeRect(mmx-2,mmy-2,mm+4,mm+4);
+      for(let ty2=0;ty2<MAP_H;ty2++)for(let tx2=0;tx2<MAP_W;tx2++){const t2=THE_MAP[ty2][tx2];ctx.fillStyle=t2===T_WATER?"#0e4a7a":t2===T_TREE?"#0d2008":(t2>=5&&t2<=9)||t2===T_RAVENS?"#fbbf24":t2===T_HOUSE?"#374151":t2===T_PATH?"#92400e":t2===T_SAND?"#ca8a04":t2===T_OWPIER?"#78350f":t2===T_WALOX?(player.waloxDefeated?"#7dd3fc":"#22d3ee"):"#166534";ctx.fillRect(mmx+tx2*mms,mmy+ty2*mms,Math.ceil(mms),Math.ceil(mms));}
+      ctx.fillStyle="#f87171";ctx.beginPath();ctx.arc(mmx+Math.floor(posRef.current.x/TS)*mms+mms/2,mmy+Math.floor(posRef.current.y/TS)*mms+mms/2,2,0,Math.PI*2);ctx.fill();
+      rafRef.current=requestAnimationFrame(loop);
+    };
+    rafRef.current=requestAnimationFrame(loop);
+    return()=>cancelAnimationFrame(rafRef.current);
+  },[]);
+  const K=k=>v=>{keysRef.current[k]=v;};
+  const dBtn=(k,lbl)=>(<button onTouchStart={e=>{e.preventDefault();K(k)(true);}} onTouchEnd={e=>{e.preventDefault();K(k)(false);}} onMouseDown={()=>K(k)(true)} onMouseUp={()=>K(k)(false)} onMouseLeave={()=>K(k)(false)} style={{width:46,height:46,background:"rgba(2,12,24,.82)",border:"1px solid #1e5a8a",color:"#38bdf8",fontSize:20,borderRadius:8,cursor:"pointer",userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none",WebkitTapHighlightColor:"transparent",touchAction:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>{lbl}</button>);
+  return(
+    <div style={{width:"100%",height:"100%",position:"relative",overflow:"hidden",background:"#020c18"}}>
+      <canvas ref={canvasRef} style={{display:"block",width:"100%",height:"100%"}}/>
+      <div style={{position:"absolute",top:8,left:8,background:"rgba(2,12,24,.85)",border:"1px solid #0e2a4a",padding:"5px 8px",borderRadius:4,display:"flex",gap:4,alignItems:"center"}}>
+        <span style={{color:player.gender==="f"?"#f9a8d4":"#93c5fd",fontSize:"clamp(5px,.9vw,7px)",marginRight:2}}>{player.name}</span>
+        {player.team.map((m,i)=>(<div key={i} style={{filter:`drop-shadow(0 0 3px ${m.color})`}}><MonSprite monKey={m.key} size={20}/></div>))}
+      </div>
+      <button onClick={onMenu} style={{position:"absolute",top:8,right:62,background:"rgba(2,12,24,.85)",border:"1px solid #1e5a8a",color:"#38bdf8",fontSize:"clamp(5px,1vw,8px)",fontFamily:"inherit",padding:"5px 8px",cursor:"pointer",borderRadius:4}}>📋 MENÜ</button>
+      {msg&&<div style={{position:"absolute",top:"40%",left:"50%",transform:"translateX(-50%)",background:"rgba(2,12,24,.92)",border:"1px solid #1e5a8a",padding:"8px 16px",color:"#e0f2fe",fontSize:"clamp(6px,1.2vw,10px)",fontFamily:"'Press Start 2P',monospace",whiteSpace:"nowrap",borderRadius:4}}>{msg}</div>}
+      <div style={{position:"absolute",bottom:"calc(env(safe-area-inset-bottom, 0px) + 18px)",left:16,display:"grid",gridTemplateColumns:"46px 46px 46px",gridTemplateRows:"46px 46px 46px",gap:3,touchAction:"none",WebkitUserSelect:"none",userSelect:"none",WebkitTouchCallout:"none"}}>
+        <div/>{dBtn("ArrowUp","↑")}<div/>
+        {dBtn("ArrowLeft","←")}<div/>{dBtn("ArrowRight","→")}
+        <div/>{dBtn("ArrowDown","↓")}<div/>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ CITY INTERIOR ═══ */
+function CityInterior({city,player,beaten,onArena,onCenter,onFish,onExit,onMenu,onSeestern}){
+  const canvasRef=useRef(null);
+  const CMAP=cityMap(city.id);
+  const start=cityEntryPos(city.id);
+  const posRef=useRef({...start.pos});
+  const facingRef=useRef(start.facing);
+  const keysRef=useRef({});
+  const lastTRef=useRef({x:Math.floor(start.pos.x/KTS),y:Math.floor(start.pos.y/KTS)});
+  const rafRef=useRef(null);
+  const [msg,setMsg]=useState("");
+  const msgTRef=useRef(null);
+  const genderRef=useRef(player.gender);
+  const liveRef=useRef(player);liveRef.current=player;
+  const lockRef=useRef(false);
+
+  function showMsg(txt,ms=2200){setMsg(txt);clearTimeout(msgTRef.current);msgTRef.current=setTimeout(()=>setMsg(""),ms);}
+
+  useEffect(()=>{
+    const dn=e=>{keysRef.current[e.key]=true;["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)&&e.preventDefault();};
+    const up=e=>{keysRef.current[e.key]=false;};
+    window.addEventListener("keydown",dn);window.addEventListener("keyup",up);
+    return()=>{window.removeEventListener("keydown",dn);window.removeEventListener("keyup",up);};
+  },[]);
+
+  useEffect(()=>{
+    const canvas=canvasRef.current;if(!canvas)return;
+    canvas.width=canvas.clientWidth;canvas.height=canvas.clientHeight;
+    const ctx=canvas.getContext("2d");
+    ctx.imageSmoothingEnabled=false;
+    let frame=0;const SPEED=2.2;
+    const loop=()=>{
+      frame++;
+      const k=keysRef.current;
+      let dx=0,dy=0;
+      if(!lockRef.current){
+        if(k["ArrowLeft"]||k["a"]||k["A"]){dx=-SPEED;facingRef.current="left";}
+        if(k["ArrowRight"]||k["d"]||k["D"]){dx=SPEED;facingRef.current="right";}
+        if(k["ArrowUp"]||k["w"]||k["W"]){dy=-SPEED;facingRef.current="up";}
+        if(k["ArrowDown"]||k["s"]||k["S"]){dy=SPEED;facingRef.current="down";}
+        if(dx&&dy){dx*=.707;dy*=.707;}
+      }
+      const moving=!!(dx||dy);
+      if(moving){
+        const nx=posRef.current.x+dx,ny=posRef.current.y+dy;
+        const corners=[[nx-9,ny-5],[nx+9,ny-5],[nx-9,ny+9],[nx+9,ny+9]];
+        const ok=corners.every(([cx,cy])=>{const tx=Math.floor(cx/KTS),ty=Math.floor(cy/KTS);const t2=CMAP[ty]?.[tx];return t2!==undefined&&!SOLID.has(t2);});
+        if(ok){
+          posRef.current={x:nx,y:ny};
+          const tx=Math.floor(nx/KTS),ty=Math.floor(ny/KTS);
+          const last=lastTRef.current;
+          if(tx!==last.x||ty!==last.y){
+            lastTRef.current={x:tx,y:ty};
+            const tile=CMAP[ty]?.[tx];
+            if(tile===K_ARENA&&!lockRef.current){
+              lockRef.current=true;
+              if(beaten){showMsg("🏟 Arena bereits gemeistert!");setTimeout(()=>lockRef.current=false,900);}
+              else{cancelAnimationFrame(rafRef.current);onArena();return;}
+            }else if(tile===K_CENTER&&!lockRef.current){
+              lockRef.current=true;showMsg("✚ Deine Aquariummon sind vollständig erholt!",2400);onCenter();
+              setTimeout(()=>lockRef.current=false,1200);
+            }else if(tile===K_PIER&&!lockRef.current){
+              if((liveRef.current.rods||0)<=0){AUDIO.sfx("deny");showMsg("🎣 Keine Angelwürfe mehr! Im Center auffüllen (✚).",3000);}
+              else if(liveRef.current.team.length>=3&&(liveRef.current.box?.length||0)>=BOX_MAX){AUDIO.sfx("deny");showMsg("🐟 Box voll! Lass erst ein Aquariummon frei (Menü → Box).",3000);}
+              else{lockRef.current=true;cancelAnimationFrame(rafRef.current);onFish();return;}
+            }else if(tile===K_EXIT&&!lockRef.current){
+              lockRef.current=true;cancelAnimationFrame(rafRef.current);showMsg(`→ Verlasse ${city.name}...`);setTimeout(()=>onExit(),350);return;
+            }else if(tile===K_SEESTERN&&!lockRef.current){
+              lockRef.current=true;cancelAnimationFrame(rafRef.current);onSeestern&&onSeestern();return;
+            }
+          }
+        }
+      }
+      const W=canvas.width,H=canvas.height;
+      ctx.fillStyle="#020c18";ctx.fillRect(0,0,W,H);
+      const worldW=KW*KTS,worldH=KH*KTS;
+      const camX=Math.max(0,Math.min(posRef.current.x-W/2,Math.max(0,worldW-W)));
+      const camY=Math.max(0,Math.min(posRef.current.y-H/2,Math.max(0,worldH-H)));
+      const sx=Math.floor(camX/KTS),sy=Math.floor(camY/KTS),ex=Math.ceil((camX+W)/KTS)+1,ey=Math.ceil((camY+H)/KTS)+1;
+      for(let ty2=sy;ty2<ey;ty2++)for(let tx2=sx;tx2<ex;tx2++){
+        if(ty2<0||ty2>=KH||tx2<0||tx2>=KW)continue;
+        const tt=CMAP[ty2]?.[tx2]??1, ppx=tx2*KTS-camX, ppy=ty2*KTS-camY;
+        drawCityTile(ctx,tt,ppx,ppy,KTS,frame,tx2,ty2);
+        drawAutotileEdges(ctx,CMAP,tt,ppx,ppy,KTS,frame,tx2,ty2,KW,KH);
+      }
+      drawCityDeco(ctx,city.id,camX,camY,frame);
+      // Schilder über Arena / Center / Seestern (Positionen aus der Karte)
+      ctx.font="bold 8px monospace";ctx.textAlign="center";ctx.textBaseline="bottom";
+      for(let ty2=0;ty2<KH;ty2++)for(let tx2=0;tx2<KW;tx2++){
+        const t2=CMAP[ty2][tx2];if(t2!==K_ARENA&&t2!==K_CENTER&&t2!==K_SEESTERN)continue;
+        const lx=tx2*KTS-camX+KTS/2,ly=ty2*KTS-camY-3;
+        const txt=t2===K_ARENA?(beaten?"ARENA ✓":"ARENA"):t2===K_CENTER?"CENTER":"Prof. Seestern";
+        const col=t2===K_ARENA?(beaten?"#4ade80":"#f87171"):t2===K_CENTER?"#7dd3fc":"#c4b5fd";
+        const tw=ctx.measureText(txt).width;
+        ctx.fillStyle="rgba(2,12,24,.72)";ctx.fillRect(lx-tw/2-3,ly-10,tw+6,11);
+        ctx.fillStyle=col;ctx.fillText(txt,lx,ly);
+      }
+      drawPlayer(ctx,posRef.current.x-camX,posRef.current.y-camY,facingRef.current,moving,frame,genderRef.current);
+      rafRef.current=requestAnimationFrame(loop);
+    };
+    rafRef.current=requestAnimationFrame(loop);
+    return()=>cancelAnimationFrame(rafRef.current);
+  },[beaten]);
+
+  const K=k=>v=>{keysRef.current[k]=v;};
+  const dBtn=(k,lbl)=>(<button onTouchStart={e=>{e.preventDefault();K(k)(true);}} onTouchEnd={e=>{e.preventDefault();K(k)(false);}} onMouseDown={()=>K(k)(true)} onMouseUp={()=>K(k)(false)} onMouseLeave={()=>K(k)(false)} style={{width:46,height:46,background:"rgba(2,12,24,.82)",border:"1px solid #1e5a8a",color:"#38bdf8",fontSize:20,borderRadius:8,cursor:"pointer",userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none",WebkitTapHighlightColor:"transparent",touchAction:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>{lbl}</button>);
+  return(
+    <div style={{width:"100%",height:"100%",position:"relative",overflow:"hidden",background:"#020c18"}}>
+      <canvas ref={canvasRef} style={{display:"block",width:"100%",height:"100%"}}/>
+      <div style={{position:"absolute",top:8,left:8,background:"rgba(2,12,24,.85)",border:"1px solid #0e2a4a",padding:"5px 8px",borderRadius:4,display:"flex",gap:4,alignItems:"center"}}>
+        <span style={{color:"#fbbf24",fontSize:"clamp(6px,1vw,9px)",marginRight:4}}>📍 {city.name.toUpperCase()}{city.finale?" ★":""}</span>
+        {player.team.map((m,i)=>(<div key={i} style={{filter:`drop-shadow(0 0 3px ${m.color})`}}><MonSprite monKey={m.key} size={20}/></div>))}
+      </div>
+      <div style={{position:"absolute",top:"calc(env(safe-area-inset-top, 0px) + 42px)",left:"50%",transform:"translateX(-50%)",textAlign:"center",pointerEvents:"none"}}>
+        <div style={{color:"#fde047",fontSize:"clamp(9px,2vw,15px)",letterSpacing:"3px",textShadow:"0 2px 0 #1c1917, 0 0 14px #ca8a04"}}>{city.name.toUpperCase()}</div>
+      </div>
+      <button onClick={onMenu} style={{position:"absolute",top:8,right:8,background:"rgba(2,12,24,.85)",border:"1px solid #1e5a8a",color:"#38bdf8",fontSize:"clamp(5px,1vw,8px)",fontFamily:"inherit",padding:"5px 8px",cursor:"pointer",borderRadius:4}}>📋 MENÜ</button>
+      {msg&&<div style={{position:"absolute",top:"38%",left:"50%",transform:"translateX(-50%)",background:"rgba(2,12,24,.92)",border:"1px solid #1e5a8a",padding:"8px 16px",color:"#e0f2fe",fontSize:"clamp(6px,1.2vw,10px)",fontFamily:"'Press Start 2P',monospace",whiteSpace:"nowrap",borderRadius:4,textAlign:"center"}}>{msg}</div>}
+      <div style={{position:"absolute",bottom:"calc(env(safe-area-inset-bottom, 0px) + 18px)",left:16,display:"grid",gridTemplateColumns:"46px 46px 46px",gridTemplateRows:"46px 46px 46px",gap:3,touchAction:"none",WebkitUserSelect:"none",userSelect:"none",WebkitTouchCallout:"none"}}>
+        <div/>{dBtn("ArrowUp","↑")}<div/>
+        {dBtn("ArrowLeft","←")}<div/>{dBtn("ArrowRight","→")}
+        <div/>{dBtn("ArrowDown","↓")}<div/>
+      </div>
+      <div style={{position:"absolute",bottom:8,right:8,color:"#1e3a5a",fontSize:"clamp(4px,.7vw,6px)",textAlign:"right",lineHeight:1.8}}>⚔ Arena · ✚ Center<br/>🎣 Steg = Angeln<br/>▼ Süden = Ausgang</div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ MENU + DEX ═══ */
+const G=(bg,col,x={})=>({background:bg,border:`1px solid ${col}`,color:col,fontFamily:"'Press Start 2P',monospace",fontSize:"clamp(5px,1.1vw,9px)",padding:"8px 10px",cursor:"pointer",lineHeight:1.5,...x});
+function MenuScreen({player,onClose,onSave,onToBox,onToTeam,onRelease,onEvolve,onReorder,onAudio}){
+  const [musicOn,setMusicOn]=useState(AUDIO.musicOn);
+  const [sfxOn,setSfxOn]=useState(AUDIO.sfxOn);
+  const [saved,setSaved]=useState(false);
+  const [tab,setTab]=useState("team");
+  const [relIdx,setRelIdx]=useState(null);
+  async function doSave(){await onSave();setSaved(true);setTimeout(()=>setSaved(false),1500);}
+  const caught=player.caught||[];
+  const seen=player.seen||[];
+  const baits=player.baits||[];
+  const tabBtn=(id,lbl)=>(
+    <button onClick={()=>setTab(id)} style={{...G(tab===id?"#062040":"#020c18",tab===id?"#38bdf8":"#334155"),fontSize:"clamp(5px,1vw,8px)",padding:"7px 9px"}}>{lbl}</button>
+  );
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(2,12,24,.96)",display:"flex",flexDirection:"column",alignItems:"center",zIndex:200,padding:14,gap:10,overflowY:"auto"}}>
+      <div style={{color:"#38bdf8",fontSize:"clamp(8px,1.5vw,12px)",marginTop:4}}>📋 {player.name}</div>
+      <div style={{display:"flex",gap:6}}>
+        {tabBtn("team","TEAM")}{tabBtn("dex","📖 DEX")}{tabBtn("baits","🪝 KÖDER")}
+      </div>
+
+      {tab==="team"&&<div style={{width:"100%",maxWidth:360,display:"flex",flexDirection:"column",gap:8}}>
+        <div style={{color:"#7dd3fc",fontSize:"clamp(5px,.9vw,8px)",textAlign:"center"}}>AKTIVES TEAM ({player.team.length}/3) — #1 startet den Kampf</div>
+        <div style={{background:"#041624",border:"1px solid #0e2a4a",padding:10}}>
+          {player.team.map((m,i)=>{
+            const nxt=xpToNext(m);const pct=nxt?Math.min(100,((m.xp-(LV_XP[m.level-1]||0))/(nxt-(LV_XP[m.level-1]||0)))*100):100;
+            return(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:i===0?"4px":"0",background:i===0?"#062040":"transparent",borderRadius:4}}>
+              <div style={{display:"flex",flexDirection:"column",gap:2,alignItems:"center"}}>
+                <button onClick={()=>i>0&&onReorder&&onReorder(i,i-1)} disabled={i===0} style={{...G("#0a1420","#7dd3fc"),fontSize:"clamp(5px,1vw,9px)",padding:"2px 5px",opacity:i===0?.25:1,lineHeight:1}}>▲</button>
+                <span style={{color:i===0?"#fbbf24":"#475569",fontSize:"clamp(5px,.9vw,8px)"}}>{i+1}</span>
+                <button onClick={()=>i<player.team.length-1&&onReorder&&onReorder(i,i+1)} disabled={i===player.team.length-1} style={{...G("#0a1420","#7dd3fc"),fontSize:"clamp(5px,1vw,9px)",padding:"2px 5px",opacity:i===player.team.length-1?.25:1,lineHeight:1}}>▼</button>
+              </div>
+              <div style={{filter:`drop-shadow(0 0 5px ${m.color})`}}><MonSprite monKey={m.key} size={34}/></div>
+              <div style={{flex:1}}>
+                <div style={{color:m.color,fontSize:"clamp(5px,.9vw,8px)"}}>{m.name} <span style={{color:"#fbbf24"}}>Lv{m.level||1}</span></div>
+                <div style={{width:88,height:5,background:"#0e1a2a",borderRadius:3,marginTop:3,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${m.hp/m.maxHp*100}%`,background:hpCol(Math.round(m.hp/m.maxHp*100))}}/>
+                </div>
+                <div style={{width:88,height:3,background:"#0e1a2a",borderRadius:2,marginTop:2,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${pct}%`,background:"#a78bfa"}}/>
+                </div>
+                <div style={{color:"#475569",fontSize:"clamp(4px,.7vw,6px)",marginTop:2}}>{m.hp}/{m.maxHp}HP · A{m.atk} D{m.def} · {nxt?`${m.xp}/${nxt}XP`:"MAX"}</div>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                {EVO[m.key]&&(m.level||1)>=MAXLV&&<button onClick={()=>onEvolve&&onEvolve("team",i)} style={{...G("#12082a","#c084fc"),fontSize:"clamp(4px,.8vw,7px)",padding:"5px 6px"}}>✨ Entw.</button>}
+                {player.team.length>1&&<button onClick={()=>onToBox&&onToBox(i)} style={{...G("#1a0a0a","#f87171"),fontSize:"clamp(4px,.8vw,7px)",padding:"5px 6px"}}>↓ Box</button>}
+              </div>
+            </div>
+            );
+          })}
+        </div>
+        <div style={{color:"#7dd3fc",fontSize:"clamp(5px,.9vw,8px)",textAlign:"center"}}>BOX ({(player.box||[]).length}/{BOX_MAX})</div>
+        <div style={{background:"#041624",border:"1px solid #0e2a4a",padding:10,minHeight:30}}>
+          {(player.box||[]).length===0&&<div style={{color:"#334155",fontSize:"clamp(4px,.8vw,7px)",textAlign:"center"}}>Keine Aquariummon in der Box.</div>}
+          {(player.box||[]).map((m,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+              <div style={{filter:`drop-shadow(0 0 4px ${m.color})`}}><MonSprite monKey={m.key} size={30}/></div>
+              <div style={{flex:1}}>
+                <div style={{color:m.color,fontSize:"clamp(5px,.9vw,8px)"}}>{m.name} <span style={{color:"#fbbf24"}}>Lv{m.level||1}</span></div>
+                <div style={{color:"#475569",fontSize:"clamp(4px,.7vw,6px)",marginTop:2}}>{m.hp}/{m.maxHp}HP · A{m.atk} D{m.def}</div>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                {EVO[m.key]&&(m.level||1)>=MAXLV&&<button onClick={()=>onEvolve&&onEvolve("box",i)} style={{...G("#12082a","#c084fc"),fontSize:"clamp(4px,.8vw,7px)",padding:"5px 6px"}}>✨ Entw.</button>}
+                <button onClick={()=>player.team.length<3&&onToTeam&&onToTeam(i)} disabled={player.team.length>=3} style={{...G("#041a0c","#4ade80"),fontSize:"clamp(4px,.8vw,7px)",padding:"5px 6px",opacity:player.team.length>=3?.4:1}}>↑ Team</button>
+                {relIdx===i
+                  ?<button onClick={()=>{onRelease&&onRelease(i);setRelIdx(null);}} style={{...G("#2a0808","#f87171"),fontSize:"clamp(4px,.8vw,7px)",padding:"5px 6px"}}>Sicher?</button>
+                  :<button onClick={()=>setRelIdx(i)} style={{...G("#1a0a0a","#9a3412"),fontSize:"clamp(4px,.8vw,7px)",padding:"5px 6px"}}>✕ Frei</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{color:"#334155",fontSize:"clamp(4px,.7vw,7px)",textAlign:"center"}}>🎣 {player.rods} Angelwürfe · Team max 3 · Box max {BOX_MAX}</div>
+      </div>}
+
+      {tab==="dex"&&<div style={{width:"100%",maxWidth:390}}>
+        <div style={{color:"#7dd3fc",fontSize:"clamp(5px,.9vw,8px)",textAlign:"center",marginBottom:3}}>AQUARIUMDEX — {BASE_KEYS.filter(k=>caught.includes(k)).length}/{BASE_KEYS.length} gefangen</div>
+        <div style={{color:"#475569",fontSize:"clamp(4px,.7vw,6px)",textAlign:"center",marginBottom:8}}>Entwicklungen: {EVOLVED_KEYS.filter(k=>caught.includes(k)).length}/{EVOLVED_KEYS.length} freigeschaltet</div>
+        <div style={{display:"flex",flexDirection:"column",gap:7}}>
+          {BASE_KEYS.map(k=>{
+            const mon=MONS[k];const isCaught=caught.includes(k);const isSeen=seen.includes(k)||isCaught;
+            const ek=EVO[k];const emon=ek?MONS[ek]:null;const eCaught=ek&&caught.includes(ek);
+            return(
+              <div key={k} style={{background:isCaught?"#041828":"#0a0e16",border:`1px solid ${isCaught?mon.color+"55":"#1e293b"}`,borderRadius:6,padding:7,display:"flex",alignItems:"center",gap:6}}>
+                {/* Basis */}
+                <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,width:78}}>
+                  <div style={{height:40,display:"flex",alignItems:"center",justifyContent:"center",filter:isCaught?`drop-shadow(0 0 5px ${mon.color})`:"brightness(0) opacity(0.45)"}}>
+                    {isSeen?<MonSprite monKey={k} size={38}/>:<span style={{fontSize:26,color:"#1e293b"}}>❓</span>}
+                  </div>
+                  <div style={{color:isCaught?mon.color:"#475569",fontSize:"clamp(4.5px,.8vw,7px)"}}>{isSeen?mon.name:"???"}</div>
+                  <div style={{color:"#475569",fontSize:"clamp(3.5px,.6vw,5.5px)",textAlign:"center",lineHeight:1.4}}>{isCaught?`HP${mon.maxHp} A${mon.atk} D${mon.def}`:isSeen?"gesichtet":"unbekannt"}</div>
+                </div>
+                <div style={{color:eCaught?"#c084fc":"#1e293b",fontSize:"clamp(7px,1.3vw,11px)"}}>➜</div>
+                {/* Entwicklung */}
+                <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,flex:1}}>
+                  <div style={{height:40,display:"flex",alignItems:"center",justifyContent:"center",filter:eCaught?`drop-shadow(0 0 6px ${emon.color})`:"brightness(0) opacity(0.4)"}}>
+                    {eCaught?<MonSprite monKey={ek} size={40}/>:<span style={{fontSize:26,color:"#1e293b"}}>✨</span>}
+                  </div>
+                  <div style={{color:eCaught?emon.color:"#475569",fontSize:"clamp(4.5px,.8vw,7px)"}}>{eCaught?emon.name:"???"}</div>
+                  <div style={{color:"#475569",fontSize:"clamp(3.5px,.6vw,5.5px)",textAlign:"center",lineHeight:1.4}}>{eCaught?`${emon.type} · HP${emon.maxHp} A${emon.atk} D${emon.def}`:"Lv3 → entwickeln"}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Legendär: Walox */}
+        {(()=>{const wCaught=caught.includes("walox");const ready=(player.team||[]).some(m=>(m.level||1)>=MAXLV);return(
+          <div style={{marginTop:10,padding:10,borderRadius:6,background:wCaught?"#06212a":"#0a0e16",border:`1px solid ${wCaught?"#22d3ee":"#155e75"}`,display:"flex",alignItems:"center",gap:12}}>
+            <div style={{filter:wCaught?"drop-shadow(0 0 10px #22d3ee)":"brightness(.3) opacity(.6)"}}><MonSprite monKey="walox" size={52}/></div>
+            <div style={{flex:1}}>
+              <div style={{color:wCaught?"#22d3ee":"#475569",fontSize:"clamp(6px,1.1vw,9px)"}}>★ {wCaught?"Walox":"???"} <span style={{color:"#64748b",fontSize:"clamp(4px,.7vw,6px)"}}>Legendär</span></div>
+              <div style={{color:"#475569",fontSize:"clamp(4px,.7vw,6px)",marginTop:3,lineHeight:1.6}}>
+                {wCaught?"Der legendäre Wal des Bodensees – bezwungen!":ready?"Erwacht in der Seemitte. Stelle dich ihm – er ist gewaltig!":"Bring ein Aquariummon auf Lv3, um ihn herauszufordern."}
+              </div>
+            </div>
+          </div>
+        );})()}
+      </div>}
+
+      {tab==="baits"&&<div style={{width:"100%",maxWidth:360}}>
+        <div style={{color:"#7dd3fc",fontSize:"clamp(5px,.9vw,8px)",textAlign:"center",marginBottom:8}}>KÖDER-SAMMLUNG — {baits.length}/{Object.keys(BAITS).length}</div>
+        <div style={{color:"#334155",fontSize:"clamp(4px,.7vw,7px)",textAlign:"center",marginBottom:10}}>Jeder besiegte Arena-Boss schenkt einen Köder.<br/>Köder erhöhen deine Fang-Chance beim Angeln.</div>
+        {Object.keys(BAITS).map(bk=>{
+          const b=BAITS[bk];const have=baits.includes(bk);
+          return(
+            <div key={bk} style={{display:"flex",alignItems:"center",gap:10,marginBottom:7,padding:8,background:have?"#041624":"#0a0e16",border:`1px solid ${have?b.col+"55":"#1e293b"}`,borderRadius:5,opacity:have?1:.5}}>
+              <div style={{fontSize:24,filter:have?"none":"grayscale(1) opacity(.5)"}}>{have?b.ico:"🔒"}</div>
+              <div style={{flex:1}}>
+                <div style={{color:have?b.col:"#475569",fontSize:"clamp(5px,.9vw,8px)"}}>{have?b.name:"???"}</div>
+                <div style={{color:"#475569",fontSize:"clamp(3.5px,.6vw,6px)",marginTop:2}}>{have?`+${b.bonus}% Fang · von ${b.by}`:`besiege ${b.by}`}</div>
+              </div>
+              {have&&<span style={{color:"#4ade80",fontSize:"clamp(6px,1vw,10px)"}}>✓</span>}
+            </div>
+          );
+        })}
+      </div>}
+
+      <div style={{display:"flex",gap:6,marginTop:"auto",paddingTop:8,alignItems:"center"}}>
+        <button onClick={()=>{const n=!musicOn;setMusicOn(n);AUDIO.setMusic(n);AUDIO.sfx("click");onAudio&&onAudio(n,sfxOn);}}
+          style={{...G(musicOn?"#041a2a":"#0a0a14",musicOn?"#7dd3fc":"#334155"),fontSize:"clamp(4px,.85vw,7px)",padding:"7px 8px"}}>
+          {musicOn?"🎵 AN":"🎵 AUS"}
+        </button>
+        <button onClick={()=>{const n=!sfxOn;setSfxOn(n);AUDIO.setSfx(n);if(n)AUDIO.sfx("click");onAudio&&onAudio(musicOn,n);}}
+          style={{...G(sfxOn?"#041a2a":"#0a0a14",sfxOn?"#7dd3fc":"#334155"),fontSize:"clamp(4px,.85vw,7px)",padding:"7px 8px"}}>
+          {sfxOn?"🔊 AN":"🔇 AUS"}
+        </button>
+        <button onClick={doSave} style={{...G("#041a0c","#4ade80"),opacity:saved?.6:1,fontSize:"clamp(4px,.9vw,8px)",padding:"7px 8px"}}>{saved?"✓ OK":"💾 SPEICHERN"}</button>
+        <button onClick={()=>{AUDIO.sfx("back");onClose();}} style={{...G("#041624","#38bdf8"),fontSize:"clamp(4px,.9vw,8px)",padding:"7px 8px"}}>← WEITER</button>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ FISHING ═══ */
+function FishingScreen({city,baitBonus=0,onCaught,onBack}){
+  const [phase,setPhase]=useState("idle");const [pos,setPos]=useState(50);const [hits,setHits]=useState(0);const [misses,setMisses]=useState(0);const [caught,setCaught]=useState(null);const [msg,setMsg]=useState("Wirf die Angel aus!");
+  const [round,setRound]=useState(0); // bumped every time reeling (re)starts so the effect re-fires even if phase stays "reeling"
+  const [zoneS]=useState(()=>18+Math.random()*30);const [zoneW]=useState(()=>18+Math.random()*10+baitBonus*0.35);
+  const rafRef=useRef(null);const posRef=useRef(50);const dirRef=useRef(1);const spdRef=useRef(1.4);const zoneE=Math.min(92,zoneS+zoneW);
+  function startReeling(){posRef.current=50;setPos(50);setPhase("reeling");setRound(r=>r+1);}
+  useEffect(()=>{if(phase!=="reeling")return;const tick=()=>{posRef.current+=spdRef.current*dirRef.current;if(posRef.current>=100){posRef.current=100;dirRef.current=-1;}if(posRef.current<=0){posRef.current=0;dirRef.current=1;}setPos(posRef.current);rafRef.current=requestAnimationFrame(tick);};rafRef.current=requestAnimationFrame(tick);return()=>cancelAnimationFrame(rafRef.current);},[phase,round]);
+  function cast(){spdRef.current=1.2+Math.random()*.9;dirRef.current=1;setHits(0);setMisses(0);setPhase("casting");setMsg("Ein Fisch nähert sich...");setTimeout(()=>{startReeling();setMsg("Klicke wenn Zeiger im GRÜNEN Bereich ist!");},1400);}
+  function pull(){if(phase!=="reeling")return;cancelAnimationFrame(rafRef.current);const inZ=pos>=zoneS&&pos<=zoneE;if(inZ){const nh=hits+1;setHits(nh);if(nh>=2){const key=city.wild[Math.floor(Math.random()*city.wild.length)];setCaught(key);setPhase("result");setMsg(`${MONS[key].name} gefangen!`);}else{setMsg("✅ Treffer! Nochmal!");spdRef.current+=.4;dirRef.current=1;setTimeout(()=>startReeling(),500);}}else{const nm=misses+1;setMisses(nm);spdRef.current+=.3;dirRef.current=1;if(nm>=3){setPhase("result");setMsg("❌ Der Fisch entkam...");}else{setMsg(`❌ Daneben! Noch ${3-nm}.`);setTimeout(()=>startReeling(),600);}}}
+  return(
+    <div style={{width:"100%",height:"100%",background:"linear-gradient(180deg,#020c18,#041a2e 60%,#031220)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px",gap:"14px"}}>
+      <div style={{color:"#38bdf8",fontSize:"clamp(8px,1.5vw,12px)"}}>🎣 ANGELN — {city.name.toUpperCase()}</div>
+      {baitBonus>0&&<div style={{color:"#a3e635",fontSize:"clamp(4px,.8vw,7px)"}}>🪝 Köder aktiv: +{Math.round(baitBonus*0.35)}% Fangzone</div>}
+      <div style={{color:"#7dd3fc",fontSize:"clamp(6px,1.2vw,10px)",textAlign:"center",minHeight:"22px"}}>{msg}</div>
+      {(phase==="reeling"||phase==="casting")&&<div onClick={phase==="reeling"?pull:undefined} style={{width:"min(92%,380px)",cursor:phase==="reeling"?"pointer":"default"}}>
+        <div style={{width:"100%",height:30,background:"#020c18",border:"1px solid #0e4a7a",borderRadius:4,position:"relative",overflow:"hidden"}}>
+          <div style={{position:"absolute",top:0,bottom:0,left:`${zoneS}%`,width:`${zoneE-zoneS}%`,background:"rgba(0,230,118,.22)",borderLeft:"2px solid #00e676",borderRight:"2px solid #00e676"}}/>
+          <div style={{position:"absolute",top:3,bottom:3,width:6,marginLeft:-3,left:`${pos}%`,background:"#fbbf24",borderRadius:2,boxShadow:"0 0 8px #f59e0b"}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:3,color:"#334155",fontSize:"clamp(4px,.7vw,7px)"}}><span>Treffer:{hits}/2</span><span>Versuche:{misses}/3</span></div>
+      </div>}
+      {phase==="idle"&&<button onClick={cast} style={{...G("#041a0c","#4ade80",{padding:"12px 24px",fontSize:"clamp(8px,1.5vw,11px)"})}}>🎣 Angel auswerfen</button>}
+      {phase==="reeling"&&<button onClick={pull} style={{...G("#041a10","#00e676",{padding:"12px 24px",fontSize:"clamp(8px,1.5vw,11px)",boxShadow:"0 0 12px #00e67640"})}}>⚡ JETZT ZIEHEN!</button>}
+      {phase==="result"&&caught&&<div style={{textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}><div style={{filter:`drop-shadow(0 0 20px ${MONS[caught].color})`,animation:"monIdle 1.5s ease-in-out infinite alternate"}}><MonSprite monKey={caught} size={110}/></div><div style={{color:"#4ade80",fontSize:"clamp(8px,1.5vw,12px)"}}>{MONS[caught].name} gefangen!</div><button onClick={()=>onCaught(caught)} style={{...G("#041a0c","#4ade80"),marginTop:6}}>→ Zum Team</button></div>}
+      {phase==="result"&&!caught&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:10}}><div style={{fontSize:"3rem"}}>🌊</div><button onClick={()=>setPhase("idle")} style={G("#041624","#38bdf8")}>↺ Nochmal</button></div>}
+      {phase!=="result"&&<button onClick={onBack} style={{...G("#0a0a14","#334155"),marginTop:"auto"}}>← Zurück</button>}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ BATTLE ═══ */
+/* Level & XP: max Level 3, +25% Werte pro Level */
+const MAXLV=3;
+const BOX_MAX=10; // max. Aquariummon in der Box
+const LV_XP=[0,180,520]; // benötigtes Gesamt-XP für Level 1/2/3
+const scaleStat=(base,level)=>Math.round(base*(1+(level-1)*0.25));
+const lvlFromXp=xp=>{let l=1;for(let i=1;i<LV_XP.length;i++)if(xp>=LV_XP[i])l=i+1;return Math.min(MAXLV,l);};
+const xpToNext=mon=>{const l=mon.level||1;return l>=MAXLV?null:LV_XP[l];}; // Gesamt-XP nötig fürs nächste Level
+const mkMon=(k,level=1,xp=0)=>{
+  const b=MONS[k];
+  return {...b,key:k,level,xp,maxHp:scaleStat(b.maxHp,level),atk:scaleStat(b.atk,level),def:scaleStat(b.def,level),spd:scaleStat(b.spd||10,level),hp:scaleStat(b.maxHp,level),atkMod:0,defMod:0};
+};
+// XP gutschreiben → ggf. Level-Up (Werte neu skalieren, HP um Zuwachs erhöhen)
+const grantXp=(mon,amount)=>{
+  const b=MONS[mon.key];if(!b)return mon;
+  let xp=(mon.xp||0)+amount;let level=mon.level||1;let leveled=false;
+  while(level<MAXLV&&xp>=LV_XP[level]){level++;leveled=true;}
+  const maxHp=scaleStat(b.maxHp,level);
+  const dHp=maxHp-(mon.maxHp||scaleStat(b.maxHp,mon.level||1));
+  return {...mon,xp,level,maxHp,atk:scaleStat(b.atk,level),def:scaleStat(b.def,level),spd:scaleStat(b.spd||10,level),hp:Math.min(maxHp,(mon.hp||maxHp)+(leveled?dHp:0)),_leveled:leveled};
+};
+const calcDmg=(a,d,mv)=>{const p=MOVES[mv]?.p||0;if(!p)return 0;const atk=a.atk*(1+(a.atkMod||0)*.3);const def=d.def*(1+(d.defMod||0)*.3);return Math.max(1,Math.floor(atk/def*p*(.85+Math.random()*.15)));};
+const hpCol=p=>p>60?"#00e676":p>30?"#ffb300":"#ff1744";
+
+/* ═══════════════════════════════════════════════════ KAMPF-KULISSE ═══ */
+/* Ortsabhängiger, animierter Hintergrund hinter dem Kampf-UI. */
+/* ═══════════════════════════════════════════════════ BILDSCHIRM-ÜBERGANG ═══ */
+function ScreenTransition({trans,onCovered,onDone}){
+  const {kind,phase}=trans;
+  useEffect(()=>{
+    // "in" = zudecken, danach Bildschirm wechseln; "out" = wieder aufdecken
+    const dur=kind==="battle"?(phase==="in"?620:380):(phase==="in"?260:300);
+    const id=setTimeout(()=>{phase==="in"?onCovered():onDone();},dur);
+    return()=>clearTimeout(id);
+  },[kind,phase]);
+
+  if(kind==="battle"){
+    // Kampfstart: Blitze + zulaufende Balken
+    return(
+      <div style={{position:"fixed",inset:0,zIndex:900,pointerEvents:"none",overflow:"hidden"}}>
+        <style>{`
+          @keyframes bFlash{0%,100%{opacity:0}20%{opacity:.85}40%{opacity:.15}60%{opacity:.7}80%{opacity:.1}}
+          @keyframes barIn{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+          @keyframes barOut{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+        `}</style>
+        {phase==="in"&&<div style={{position:"absolute",inset:0,background:"#e0f2fe",animation:"bFlash .6s ease-out forwards"}}/>}
+        {[...Array(7)].map((_,i)=>(
+          <div key={i} style={{position:"absolute",left:0,right:0,top:`${i*(100/7)}%`,height:`${100/7+0.6}%`,
+            background:"#020c18",transformOrigin:i%2?"right":"left",
+            animation:`${phase==="in"?"barIn":"barOut"} ${phase==="in"?.42:.34}s ease-${phase==="in"?"in":"out"} forwards`,
+            animationDelay:`${(phase==="in"?i:6-i)*0.035}s`,
+            transform:phase==="in"?"scaleX(0)":"scaleX(1)"}}/>
+        ))}
+      </div>
+    );
+  }
+  // Sanftes Abblenden für Karte/Stadt/Menüs
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:900,pointerEvents:"none",background:"#020c18",
+      animation:`${phase==="in"?"fadeIn":"fadeOut"} ${phase==="in"?.26:.3}s ease-${phase==="in"?"in":"out"} forwards`,
+      opacity:phase==="in"?0:1}}>
+      <style>{`@keyframes fadeIn{from{opacity:0}to{opacity:1}}@keyframes fadeOut{from{opacity:1}to{opacity:0}}`}</style>
+    </div>
+  );
+}
+
+function BattleBackdrop({scene}){
+  const ref=useRef(null);
+  useEffect(()=>{
+    const cv=ref.current;if(!cv)return;
+    let raf,fr=0;
+    const resize=()=>{cv.width=cv.clientWidth;cv.height=cv.clientHeight;};
+    resize();
+    const onR=()=>resize();window.addEventListener("resize",onR);
+    const ctx=cv.getContext("2d");
+    const PAL={
+      lake:   {sky:["#0b2f52","#134b73"],sun:"#7dd3fc",water:["#0b4f7e","#062f4d"],land:"#1a6b34"},
+      harbor: {sky:["#0a2540","#1b3f5e"],sun:"#93c5fd",water:["#0d4468","#062b45"],land:"#3f4756"},
+      arena:  {sky:["#2a1206","#4a220c"],sun:"#fbbf24",water:null,land:"#7c2d12"},
+      deep:   {sky:["#03121f","#062033"],sun:"#22d3ee",water:["#062033","#010a12"],land:null},
+      night:  {sky:["#050b1c","#0b1836"],sun:"#a5b4fc",water:["#08263f","#04121f"],land:"#123d2a"},
+    };
+    const P=PAL[scene]||PAL.lake;
+    const loop=()=>{
+      fr++;
+      const W=cv.width,H=cv.height;if(!W||!H){raf=requestAnimationFrame(loop);return;}
+      // Himmel
+      const g=ctx.createLinearGradient(0,0,0,H*.62);
+      g.addColorStop(0,P.sky[0]);g.addColorStop(1,P.sky[1]);
+      ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+      // Sterne (nachts / Tiefsee)
+      if(scene==="night"||scene==="deep"){
+        for(let i=0;i<26;i++){
+          const h=(i*2654435761)>>>0;
+          const x=(h%W),y=((h>>7)%Math.round(H*.5));
+          const tw=.35+Math.sin(fr*.05+i)*.3;
+          ctx.fillStyle=`rgba(226,240,255,${Math.max(0,tw)})`;
+          ctx.fillRect(x,y,2,2);
+        }
+      }
+      // Sonne / Mond / Leuchten
+      const cx=W*.76,cy=H*.2;
+      ctx.fillStyle=P.sun;ctx.globalAlpha=.18;
+      ctx.beginPath();ctx.arc(cx,cy,Math.min(W,H)*.16,0,Math.PI*2);ctx.fill();
+      ctx.globalAlpha=.75;
+      ctx.beginPath();ctx.arc(cx,cy,Math.min(W,H)*.065,0,Math.PI*2);ctx.fill();
+      ctx.globalAlpha=1;
+      if(scene==="arena"){
+        // Arena: Ränge + Fackeln statt Wasser
+        ctx.fillStyle="#3f1d0a";ctx.fillRect(0,H*.34,W,H*.66);
+        ctx.fillStyle="#5a2b10";
+        for(let r=0;r<3;r++)ctx.fillRect(0,H*.34+r*H*.09,W,H*.055);
+        for(let i=0;i<6;i++){
+          const fx=W*(.08+i*.17),fy=H*.36;
+          const fl=.55+Math.sin(fr*.13+i*1.7)*.4;
+          ctx.fillStyle="#57534e";ctx.fillRect(fx-2,fy,4,H*.1);
+          ctx.fillStyle=`rgba(251,146,60,${fl})`;
+          ctx.beginPath();ctx.ellipse(fx,fy-4,5,9+Math.sin(fr*.2+i)*2,0,0,Math.PI*2);ctx.fill();
+          ctx.fillStyle=`rgba(253,224,71,${fl*.9})`;
+          ctx.beginPath();ctx.ellipse(fx,fy-3,2.5,5,0,0,Math.PI*2);ctx.fill();
+        }
+        ctx.fillStyle=P.land;ctx.fillRect(0,H*.66,W,H*.34);
+        ctx.fillStyle="rgba(0,0,0,.18)";
+        for(let i=0;i<W;i+=18)ctx.fillRect(i,H*.66,9,H*.34);
+      }else{
+        // Ferne Uferlinie / Berge
+        if(P.land){
+          ctx.fillStyle="rgba(12,40,30,.85)";
+          ctx.beginPath();ctx.moveTo(0,H*.56);
+          for(let x=0;x<=W;x+=W/8){
+            const hgt=H*.56-(Math.sin(x*.006+2)*H*.05+H*.04);
+            ctx.lineTo(x,hgt);
+          }
+          ctx.lineTo(W,H*.62);ctx.lineTo(0,H*.62);ctx.closePath();ctx.fill();
+        }
+        // Wasserfläche
+        if(P.water){
+          const wg=ctx.createLinearGradient(0,H*.6,0,H);
+          wg.addColorStop(0,P.water[0]);wg.addColorStop(1,P.water[1]);
+          ctx.fillStyle=wg;ctx.fillRect(0,H*.6,W,H*.4);
+          // Lichtreflex-Bahn unter der Sonne
+          ctx.fillStyle=P.sun;
+          for(let i=0;i<9;i++){
+            const yy=H*.63+i*(H*.04);
+            const ww=(W*.16)*(1-i*.07)+Math.sin(fr*.06+i)*7;
+            ctx.globalAlpha=.14-i*.012;
+            if(ctx.globalAlpha>0)ctx.fillRect(cx-ww/2,yy,ww,2.5);
+          }
+          ctx.globalAlpha=1;
+          // Wellenlinien
+          ctx.strokeStyle="rgba(147,197,253,.16)";ctx.lineWidth=2;
+          for(let i=0;i<5;i++){
+            const yy=H*.64+i*(H*.07);
+            ctx.beginPath();
+            for(let x=0;x<=W;x+=8)ctx.lineTo(x,yy+Math.sin(x*.03+fr*.04+i)*2.5);
+            ctx.stroke();
+          }
+        }
+        // Aufsteigende Blasen in der Tiefsee
+        if(scene==="deep"){
+          for(let i=0;i<14;i++){
+            const h=(i*2246822519)>>>0;
+            const x=(h%W);
+            const y=H-((fr*1.1+ (h>>5)%H)%(H*1.05));
+            const r=1.5+(h%3);
+            ctx.fillStyle="rgba(165,243,252,.30)";
+            ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+          }
+        }
+      }
+      // Vignette für Fokus aufs UI
+      const vg=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*.25,W/2,H/2,Math.max(W,H)*.72);
+      vg.addColorStop(0,"rgba(0,0,0,0)");vg.addColorStop(1,"rgba(2,8,18,.72)");
+      ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
+      raf=requestAnimationFrame(loop);
+    };
+    raf=requestAnimationFrame(loop);
+    return()=>{cancelAnimationFrame(raf);window.removeEventListener("resize",onR);};
+  },[scene]);
+  return <canvas ref={ref} style={{position:"absolute",inset:0,width:"100%",height:"100%",zIndex:0,pointerEvents:"none"}}/>;
+}
+
+function BattleScreen({data,player,onWin,onLose}){
+  const bref=useRef({pTeam:player.team.map(m=>({...m})),eTeam:data.enemies.map(m=>({...m})),pIdx:0,eIdx:0,part:new Set([0]),log:[data.isTrainer?`${data.trainerName} fordert heraus!`:`Wilder ${data.enemies[0].name} erscheint!`],shakeP:false,shakeE:false,phase:"player"});
+  const [,rr]=useState(0);const tick=()=>rr(n=>n+1);
+  const [anim,setAnim]=useState(null); // {side,phase,moveName,dmg,color,isBuff}
+  const [showSwitch,setShowSwitch]=useState(false);
+  const busy=useRef(false);
+  const bs=bref.current;const pm=bs.pTeam[bs.pIdx];const em=bs.eTeam[bs.eIdx];
+  const addLog=m=>{bs.log=[...bs.log.slice(-4),m];tick();};
+  function shake(w){bs[w==="p"?"shakeP":"shakeE"]=true;tick();setTimeout(()=>{bs[w==="p"?"shakeP":"shakeE"]=false;tick();},360);}
+
+  function triggerAnim(cfg){
+    AUDIO.sfx(cfg.isBuff?"buff":"cast");
+    setTimeout(()=>AUDIO.sfx(cfg.dmg>=45?"crit":"hit"),300);
+    setAnim({...cfg,phase:1});
+    setTimeout(()=>setAnim(a=>a?{...a,phase:2}:null),300);
+    setTimeout(()=>setAnim(null),750);
+  }
+
+  function enemyTurn(){
+    const ce=bs.eTeam[bs.eIdx];const cp=bs.pTeam[bs.pIdx];
+    const atks=ce.moves.filter(mv=>MOVES[mv]?.p>0);
+    const mv=atks[Math.floor(Math.random()*atks.length)]||ce.moves[0];
+    const dmg=calcDmg(ce,cp,mv);
+    triggerAnim({side:"e",moveName:mv,dmg,color:ce.color,isBuff:false});
+    addLog(`${ce.name} → ${mv}: ${dmg} Schaden!`);
+    shake("p");
+    const nHp=Math.max(0,cp.hp-dmg);
+    setTimeout(()=>{bs.pTeam[bs.pIdx]={...cp,hp:nHp};tick();setTimeout(()=>{if(nHp<=0){addLog(`${cp.name} besiegt!`);const npi=bs.pIdx+1;if(npi<bs.pTeam.length){bs.pIdx=npi;bs.part.add(npi);addLog(`${bs.pTeam[npi].name} weiter!`);busy.current=false;tick();}else{bs.phase="ended";tick();setTimeout(()=>onLose(),900);}}else{busy.current=false;tick();}},300);},350);
+  }
+
+  function useMove(mv){
+    if(busy.current||bs.phase!=="player")return;
+    busy.current=true;
+    const move=MOVES[mv];const cp=bs.pTeam[bs.pIdx];const ce=bs.eTeam[bs.eIdx];
+    if(move.buff){
+      triggerAnim({side:"p",moveName:mv,dmg:0,color:cp.color,isBuff:true});
+      const k=`${move.buff}Mod`;bs.pTeam[bs.pIdx]={...cp,[k]:(cp[k]||0)+1};
+      addLog(`${cp.name}: ${mv}! ↑`);
+      setTimeout(()=>enemyTurn(),700);return;
+    }
+    const dmg=calcDmg(cp,ce,mv);
+    triggerAnim({side:"p",moveName:mv,dmg,color:cp.color,isBuff:false});
+    addLog(`${cp.name} → ${mv}: ${dmg} Schaden!`);
+    shake("e");
+    const nEHp=Math.max(0,ce.hp-dmg);
+    setTimeout(()=>{bs.eTeam[bs.eIdx]={...ce,hp:nEHp};tick();setTimeout(()=>{if(nEHp<=0){addLog(`${ce.name} besiegt! ✓`);const nei=bs.eIdx+1;if(nei<bs.eTeam.length){bs.eIdx=nei;addLog(`${bs.eTeam[nei].name} tritt an!`);busy.current=false;tick();}else{bs.phase="ended";tick();setTimeout(()=>onWin(data.cityId,data.finale||false,null,[...bs.part]),900);}}else{setTimeout(()=>enemyTurn(),320);}},200);},380);
+  }
+
+  const catchNoRoom=(player.team?.length||0)>=3 && (player.box?.length||0)>=BOX_MAX;
+  function tryCatch(){
+    if(busy.current||data.isTrainer||bs.phase!=="player")return;
+    if(catchNoRoom){addLog("Box voll! Lass erst eines frei.");tick();return;}
+    busy.current=true;
+    const ce=bs.eTeam[bs.eIdx];
+    const baitBonus=(player.baits||[]).reduce((s,bk)=>s+(BAITS[bk]?.bonus||0),0);
+    const chance=ce.catch*(1.5-(ce.hp/ce.maxHp)*.8)+baitBonus;
+    AUDIO.sfx("reel");addLog(`Angelrute ausgeworfen... 🎣`);tick();
+    setTimeout(()=>{if(Math.random()*100<chance){AUDIO.sfx("catch");addLog(`${ce.name} gefangen! 🎉`);bs.phase="ended";tick();setTimeout(()=>onWin(data.cityId,false,{...ce},[...bs.part]),1000);}else{addLog(`${ce.name} entkam!`);setTimeout(()=>enemyTurn(),350);}},1100);
+  }
+
+  function doSwitch(idx){
+    if(busy.current||bs.phase!=="player")return;
+    if(idx===bs.pIdx||bs.pTeam[idx].hp<=0)return;
+    busy.current=true;setShowSwitch(false);
+    bs.pIdx=idx;bs.part.add(idx);addLog(`${bs.pTeam[idx].name} kommt in den Kampf!`);tick();
+    setTimeout(()=>enemyTurn(),700);
+  }
+  const aliveCount=bref.current.pTeam.filter(m=>m.hp>0).length;
+
+  const hpP=m=>Math.round(m.hp/m.maxHp*100);const dis=busy.current||bs.phase!=="player";
+  // Kulisse passend zum Anlass
+  const scene=data.walox?"deep":data.rival?"night":data.isTrainer?"arena":"lake";
+
+  return(
+    <div style={{width:"100%",height:"100%",background:"#020c18",display:"flex",flexDirection:"column",padding:"8px",gap:"6px",position:"relative",overflow:"hidden"}}>
+      <BattleBackdrop scene={scene}/>
+      {/* CSS for animations */}
+      <style>{`
+        @keyframes monIdle{from{transform:translateY(0)}to{transform:translateY(-5px)}}
+        @keyframes floatDmg{0%{transform:translateY(0);opacity:1}100%{transform:translateY(-48px);opacity:0}}
+        @keyframes atkBounce{0%{transform:scale(1)}40%{transform:scale(1.18) rotate(-4deg)}100%{transform:scale(1) rotate(0deg)}}
+        @keyframes hitFlash{0%{opacity:.75}100%{opacity:0}}
+        @keyframes slideInR{from{transform:translateX(28px);opacity:0}to{transform:translateX(0);opacity:1}}
+        @keyframes slideInL{from{transform:translateX(-28px);opacity:0}to{transform:translateX(0);opacity:1}}
+        @keyframes slashFade{0%{opacity:1;scaleX:.2}100%{opacity:0;scaleX:1}}
+        @keyframes buffSpark{0%{transform:scale(1);opacity:1}50%{transform:scale(1.3);opacity:.8}100%{transform:scale(1);opacity:0}}
+      `}</style>
+
+      {/* Enemy area */}
+      <div style={{flex:"0 0 30%",display:"flex",alignItems:"center",justifyContent:"flex-end",gap:12,background:"rgba(3,16,32,.72)",border:"1px solid rgba(30,90,138,.55)",backdropFilter:"blur(1px)",zIndex:1,padding:"8px 14px",borderRadius:4,position:"relative",overflow:"hidden"}}>
+        {/* Enemy hit flash overlay */}
+        {anim?.side==="p"&&anim?.phase===2&&<div style={{position:"absolute",inset:0,background:"white",opacity:.35,animation:"hitFlash .35s ease-out forwards",pointerEvents:"none",zIndex:2}}/>}
+        {/* Slash effect (player attacks) */}
+        {anim?.side==="p"&&anim?.phase===1&&!anim?.isBuff&&<div style={{position:"absolute",top:"30%",left:"10%",width:"65%",height:5,background:`linear-gradient(90deg,transparent,${anim.color},white)`,transform:"rotate(-18deg)",borderRadius:3,boxShadow:`0 0 10px ${anim.color}`,animation:"slashFade .35s ease-out forwards",zIndex:3}}/>}
+        {/* Damage number over enemy */}
+        {anim?.side==="p"&&anim?.phase===2&&anim?.dmg>0&&<div style={{position:"absolute",top:"10%",right:"12%",color:"white",fontSize:"clamp(14px,3vw,24px)",fontWeight:"bold",textShadow:`0 2px 6px #000,0 0 14px ${em.color}`,animation:"floatDmg .75s ease-out forwards",zIndex:4,pointerEvents:"none"}}>-{anim.dmg}</div>}
+        {/* Enemy sprite */}
+        <div style={{textAlign:"right"}}>
+          {data.isTrainer&&<div style={{color:"#f87171",fontSize:"clamp(5px,.8vw,7px)",marginBottom:3}}>⚔️ {data.trainerName}</div>}
+          <div style={{color:em.color,fontSize:"clamp(6px,1.2vw,10px)"}}>{em.name}{em.level?` Lv${em.level}`:""}</div>
+          <div style={{color:"#334155",fontSize:"clamp(5px,.8vw,7px)"}}>[{em.type}] 🎣{em.catch}%</div>
+          <div style={{width:110,height:7,background:"#0e1a2a",borderRadius:4,margin:"4px 0 2px",overflow:"hidden"}}><div style={{height:"100%",width:`${hpP(em)}%`,background:hpCol(hpP(em)),transition:"width .35s"}}/></div>
+          <div style={{color:"#475569",fontSize:"clamp(4px,.7vw,7px)"}}>{em.hp}/{em.maxHp} HP</div>
+        </div>
+        <div style={{transform:bs.shakeE?"translateX(14px)":"none",transition:"transform .08s",filter:`drop-shadow(0 0 12px ${em.color}70)`,animation:anim?.side==="p"&&anim?.phase===1&&!anim?.isBuff?"atkBounce .35s ease-out":"monIdle 2s ease-in-out infinite alternate"}}>
+          <MonSprite monKey={em.key} size={Math.min(100,Math.max(60,typeof window!=="undefined"?window.innerWidth/10:80))} flip idle={!(anim?.side==="p"&&anim?.phase===1)}/>
+        </div>
+      </div>
+
+      {/* Move name banner */}
+      {anim?.phase===1&&<div style={{position:"absolute",top:"28%",left:"50%",transform:"translateX(-50%)",color:anim.color,fontSize:"clamp(7px,1.4vw,11px)",textShadow:`0 0 12px ${anim.color},0 0 24px ${anim.color}`,background:"rgba(2,12,24,.88)",padding:"5px 12px",border:`1px solid ${anim.color}40`,borderRadius:3,animation:anim.side==="p"?"slideInR .25s ease-out":"slideInL .25s ease-out",zIndex:10,whiteSpace:"nowrap"}}>
+        {anim.isBuff?"✨":anim.side==="p"?"⚡→":"←⚡"} {anim.moveName}
+      </div>}
+
+      {/* Player area */}
+      <div style={{flex:"0 0 22%",display:"flex",alignItems:"center",gap:12,background:"rgba(3,16,32,.72)",border:"1px solid rgba(30,90,138,.55)",backdropFilter:"blur(1px)",zIndex:1,padding:"8px 14px",borderRadius:4,position:"relative",overflow:"hidden"}}>
+        {/* Player hit flash */}
+        {anim?.side==="e"&&anim?.phase===2&&<div style={{position:"absolute",inset:0,background:"white",opacity:.3,animation:"hitFlash .35s ease-out forwards",pointerEvents:"none",zIndex:2}}/>}
+        {/* Enemy slash effect */}
+        {anim?.side==="e"&&anim?.phase===1&&<div style={{position:"absolute",top:"25%",right:"10%",width:"55%",height:5,background:`linear-gradient(270deg,transparent,${anim.color},white)`,transform:"rotate(18deg)",borderRadius:3,boxShadow:`0 0 10px ${anim.color}`,animation:"slashFade .35s ease-out forwards",zIndex:3}}/>}
+        {/* Damage number over player */}
+        {anim?.side==="e"&&anim?.phase===2&&anim?.dmg>0&&<div style={{position:"absolute",top:"8%",left:"12%",color:"white",fontSize:"clamp(14px,3vw,24px)",fontWeight:"bold",textShadow:`0 2px 6px #000,0 0 14px ${pm.color}`,animation:"floatDmg .75s ease-out forwards",zIndex:4,pointerEvents:"none"}}>-{anim.dmg}</div>}
+        {/* Buff sparkle */}
+        {anim?.side==="p"&&anim?.phase===1&&anim?.isBuff&&<div style={{position:"absolute",top:"10%",left:"30%",fontSize:"clamp(16px,3vw,26px)",animation:"buffSpark .5s ease-out forwards",zIndex:4}}>✨</div>}
+        <div style={{transform:`${bs.shakeP?"translateX(-14px)":"none"} ${anim?.side==="e"&&anim?.phase===1?"rotate(2deg)":""}`,transition:"transform .08s",filter:`drop-shadow(0 0 10px ${pm.color}70)`,animation:"monIdle 2.4s ease-in-out infinite alternate"}}>
+          <MonSprite monKey={pm.key} size={Math.min(85,Math.max(50,typeof window!=="undefined"?window.innerWidth/12:70))} idle/>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{color:pm.color,fontSize:"clamp(6px,1.2vw,10px)"}}>{pm.name}{pm.level?` Lv${pm.level}`:""}</div>
+          <div style={{color:"#334155",fontSize:"clamp(5px,.8vw,7px)"}}>[{pm.type}]</div>
+          <div style={{width:110,height:7,background:"#0e1a2a",borderRadius:4,margin:"4px 0 2px",overflow:"hidden"}}><div style={{height:"100%",width:`${hpP(pm)}%`,background:hpCol(hpP(pm)),transition:"width .35s"}}/></div>
+          <div style={{color:"#475569",fontSize:"clamp(4px,.7vw,7px)"}}>{pm.hp}/{pm.maxHp} HP</div>
+        </div>
+        <div style={{textAlign:"center"}}><div style={{color:"#334155",fontSize:"clamp(4px,.6vw,6px)",marginBottom:3}}>Team</div><div style={{display:"flex",gap:2}}>{bs.pTeam.map((m,i)=><div key={i} style={{opacity:i===bs.pIdx?1:.28,filter:`drop-shadow(0 0 3px ${m.color})`}}><MonSprite monKey={m.key} size={18}/></div>)}</div></div>
+      </div>
+
+      <div style={{background:"rgba(2,14,26,.82)",border:"1px solid rgba(30,90,138,.5)",padding:"7px 10px",minHeight:46,zIndex:1}}>
+        {bs.log.slice(-2).map((l,i,arr)=><div key={i} style={{color:i===arr.length-1?"#e0f2fe":"#334155",fontSize:"clamp(6px,1vw,9px)",lineHeight:1.7}}>{l}</div>)}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,position:"relative",zIndex:1}}>
+        {pm.moves.map(mv=>(<button key={mv} onClick={()=>useMove(mv)} disabled={dis} style={{...G(MOVES[mv]?.buff?"#0d0a20":"#020a1a",MOVES[mv]?.buff?"#c084fc":"#38bdf8"),opacity:dis?.38:1}}>{MOVES[mv]?.buff?"✨":"⚡"} {mv}{MOVES[mv]?.p>0&&` (${MOVES[mv].p})`}</button>))}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:data.isTrainer?"1fr":"1fr 1fr",gap:5,position:"relative",zIndex:1}}>
+        {aliveCount>1&&<button onClick={()=>setShowSwitch(true)} disabled={dis} style={{...G("#0a1420","#7dd3fc",{textAlign:"center"}),opacity:dis?.38:1}}>🔄 Wechseln</button>}
+        {!data.isTrainer&&<button onClick={tryCatch} disabled={dis||catchNoRoom} style={{...G("#041a0c","#4ade80",{textAlign:"center"}),opacity:(dis||catchNoRoom)?.38:1}}>{catchNoRoom?"🎣 Box voll":"🎣 Fangen"}</button>}
+      </div>
+
+      {showSwitch&&<div style={{position:"absolute",inset:0,background:"rgba(2,12,24,.94)",zIndex:30,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10,padding:16}}>
+        <div style={{color:"#7dd3fc",fontSize:"clamp(7px,1.4vw,11px)"}}>🔄 AQUARIUMMON WECHSELN</div>
+        <div style={{color:"#475569",fontSize:"clamp(4px,.8vw,7px)",textAlign:"center",marginBottom:4}}>Wechseln kostet einen Zug — der Gegner greift danach an.</div>
+        <div style={{display:"flex",flexDirection:"column",gap:7,width:"100%",maxWidth:340}}>
+          {bs.pTeam.map((m,i)=>{
+            const fainted=m.hp<=0,active=i===bs.pIdx,canPick=!fainted&&!active;
+            return(
+              <button key={i} onClick={()=>canPick&&doSwitch(i)} disabled={!canPick}
+                style={{display:"flex",alignItems:"center",gap:10,padding:8,background:active?"#062040":canPick?"#041624":"#0a0a14",border:`1px solid ${active?m.color:canPick?"#1e5a8a":"#1e293b"}`,borderRadius:5,cursor:canPick?"pointer":"default",opacity:fainted?.4:1,fontFamily:"inherit"}}>
+                <div style={{filter:`drop-shadow(0 0 4px ${m.color})`}}><MonSprite monKey={m.key} size={32}/></div>
+                <div style={{flex:1,textAlign:"left"}}>
+                  <div style={{color:m.color,fontSize:"clamp(5px,.9vw,8px)"}}>{m.name}{active?" (aktiv)":fainted?" (K.O.)":""}</div>
+                  <div style={{width:90,height:5,background:"#0e1a2a",borderRadius:3,marginTop:3,overflow:"hidden"}}><div style={{height:"100%",width:`${hpP(m)}%`,background:hpCol(hpP(m))}}/></div>
+                  <div style={{color:"#475569",fontSize:"clamp(4px,.7vw,6px)",marginTop:2}}>{m.hp}/{m.maxHp} HP</div>
+                </div>
+                {canPick&&<span style={{color:"#7dd3fc",fontSize:"clamp(6px,1vw,9px)"}}>►</span>}
+              </button>
+            );
+          })}
+        </div>
+        <button onClick={()=>setShowSwitch(false)} style={{...G("#0a0a14","#475569"),marginTop:6}}>← Abbrechen</button>
+      </div>}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ GAMEOVER / CREDITS ═══ */
+function GameOverScreen({onBack}){return(<div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"#020c18",gap:16}}><div style={{color:"#ef4444",fontSize:"clamp(14px,3vw,28px)"}}>GAME OVER</div><div style={{color:"#64748b",fontSize:"clamp(6px,1vw,9px)"}}>Deine Aquariummon erschöpft...</div><button onClick={onBack} style={{...G("#041624","#38bdf8"),marginTop:8}}>→ Weiter</button></div>);}
+function CreditsScreen({onRestart}){return(<div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(#041a2e,#020c18)",gap:12,padding:24,textAlign:"center"}}><div style={{fontSize:"3rem"}}>🏆</div><div style={{color:"#fbbf24",fontSize:"clamp(10px,2vw,18px)"}}>TEAM ANGLER BESIEGT!</div><div style={{color:"#7dd3fc",fontSize:"clamp(6px,1.2vw,10px)",lineHeight:2.2}}>Dr. Haken ist Geschichte — der Bodensee ist gerettet!</div><div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center",marginTop:8}}>{BASE_KEYS.map((k,i)=><div key={k} style={{filter:`drop-shadow(0 0 8px ${MONS[k].color})`,animation:"monIdle 2s ease-in-out infinite alternate",animationDelay:`${i*.3}s`}}><MonSprite monKey={k} size={44}/></div>)}</div><div style={{color:"#22d3ee",fontSize:"clamp(6px,1.1vw,9px)",lineHeight:1.9,marginTop:6,maxWidth:380}}>🌊 Doch in der Mitte des Sees regt sich etwas Gewaltiges... Ein legendärer Schatten ist erwacht!</div><div style={{color:"#475569",fontSize:"clamp(4px,.8vw,7px)",lineHeight:1.7}}>Vollende den Aquariumdex und gehe zum Steg in der Seemitte.</div><button onClick={onRestart} style={{...G("#041624","#38bdf8"),marginTop:12}}>→ Weiter erkunden</button></div>);}
+function LegendScreen({onRestart,onContinue}){return(<div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(ellipse at 50% 45%,#06303a,#020c18)",gap:14,padding:24,textAlign:"center",position:"relative",overflow:"hidden"}}><div style={{filter:"drop-shadow(0 0 24px #22d3ee)",animation:"monIdle 2.4s ease-in-out infinite alternate"}}><MonSprite monKey="walox" size={130}/></div><div style={{color:"#22d3ee",fontSize:"clamp(12px,2.6vw,24px)",textShadow:"0 0 24px #0891b2"}}>DER BESTE ANGLER</div><div style={{color:"#fde047",fontSize:"clamp(9px,1.8vw,15px)",textShadow:"0 0 16px #ca8a04"}}>🏅 DU BIST DER BESTE ANGLER<br/>AM BODENSEE!</div><div style={{color:"#7dd3fc",fontSize:"clamp(6px,1.2vw,10px)",lineHeight:2,maxWidth:420}}>Walox kämpft nun an deiner Seite. Dein Name wird am ganzen Bodensee in Ehren gehalten.</div><div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center",marginTop:8}}><button onClick={onContinue} style={{...G("#041a0c","#4ade80")}}>↩ Weiterspielen</button><button onClick={onRestart} style={{...G("#041624","#22d3ee")}}>↺ Neues Spiel</button></div></div>);}
+function RivalEndScreen({onContinue}){return(<div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(ellipse at 50% 45%,#241033,#020c18)",gap:14,padding:24,textAlign:"center"}}><div style={{fontSize:"3rem"}}>🥷</div><div style={{color:"#c084fc",fontSize:"clamp(11px,2.3vw,20px)",textShadow:"0 0 20px #7c3aed"}}>RIVALE YURI</div><div style={{color:"#e9d5ff",fontSize:"clamp(6px,1.3vw,11px)",lineHeight:2,maxWidth:440}}>„Stark — aber noch nicht stark genug. Trainiere deine Aquariummon, entwickle sie weiter und fordere mich erneut heraus."</div><button onClick={onContinue} style={{...G("#041624","#c084fc"),marginTop:10}}>↩ Weiterspielen</button></div>);}
+function RivalWinScreen({onContinue}){return(<div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(ellipse at 50% 45%,#0a2a1a,#020c18)",gap:14,padding:24,textAlign:"center"}}><div style={{fontSize:"3rem"}}>🏆</div><div style={{color:"#fde047",fontSize:"clamp(11px,2.4vw,22px)",textShadow:"0 0 22px #ca8a04"}}>RIVALE YURI BEZWUNGEN!</div><div style={{color:"#e9d5ff",fontSize:"clamp(6px,1.3vw,11px)",lineHeight:2,maxWidth:440}}>Yuri: „Unglaublich... du bist der wahre Champion des Bodensees!"</div><div style={{color:"#a3e635",fontSize:"clamp(6px,1.2vw,10px)",lineHeight:1.9,maxWidth:440,marginTop:4}}>💬 Über Feedback würde ich mich sehr freuen — damit es künftig noch mehr zu erleben gibt!</div><button onClick={onContinue} style={{...G("#041a0c","#4ade80"),marginTop:10}}>↩ Weiterspielen</button></div>);}
+function EvolveScreen({fromKey,toKey,onDone}){
+  const [phase,setPhase]=useState(0); // 0 start, 1 flash, 2 revealed
+  useEffect(()=>{const a=setTimeout(()=>setPhase(1),900);const b=setTimeout(()=>setPhase(2),1900);return()=>{clearTimeout(a);clearTimeout(b);};},[]);
+  const key=phase<2?fromKey:toKey;
+  return(
+    <div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(ellipse at 50% 45%,#0b1e3a,#020c18)",gap:16,padding:24,textAlign:"center",overflow:"hidden"}}>
+      <style>{`@keyframes evoFlash{0%{filter:brightness(1)}50%{filter:brightness(6) saturate(0)}100%{filter:brightness(1)}}@keyframes evoSpin{0%{transform:scale(1) rotate(0)}100%{transform:scale(1.08) rotate(360deg)}}`}</style>
+      <div style={{color:"#a5b4fc",fontSize:"clamp(8px,1.6vw,13px)"}}>{phase<2?"⭐ Entwicklung...":"✨ Entwicklung abgeschlossen!"}</div>
+      <div style={{animation:phase===1?"evoFlash .5s linear infinite, evoSpin 1s linear infinite":"monIdle 2s ease-in-out infinite alternate",filter:`drop-shadow(0 0 ${phase<2?18:26}px ${MONS[key].color})`}}>
+        <MonSprite monKey={key} size={140}/>
+      </div>
+      {phase===2&&<>
+        <div style={{color:MONS[toKey].color,fontSize:"clamp(9px,1.9vw,15px)",textShadow:`0 0 14px ${MONS[toKey].color}`}}>{MONS[fromKey].name} → {MONS[toKey].name}!</div>
+        <div style={{color:"#7dd3fc",fontSize:"clamp(5px,1vw,8px)",lineHeight:1.8}}>{MONS[toKey].type} · HP{MONS[toKey].maxHp} ATK{MONS[toKey].atk} DEF{MONS[toKey].def}</div>
+        <button onClick={onDone} style={{...G("#041a0c","#4ade80"),marginTop:6}}>Weiter</button>
+      </>}
+    </div>
+  );
+}
+function ParoleScreen({onSubmit,onCancel}){
+  const [val,setVal]=useState("");const [err,setErr]=useState("");
+  function go(){if(val.trim().toUpperCase()==="ALPHA")onSubmit();else{setErr("Falsche Parole. Die Fische schweigen...");setVal("");}}
+  return(
+    <div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"radial-gradient(ellipse at 50% 55%,#062040,#020c18)",gap:14,padding:22,textAlign:"center"}}>
+      <div style={{fontSize:"clamp(40px,8vw,64px)"}}>🧑‍🔬</div>
+      <div style={{color:"#38bdf8",fontSize:"clamp(6px,1.3vw,10px)",lineHeight:1.9,maxWidth:400}}>Prof. Seestern: „Nur wahre Angler kennen die geheime Angelparole. Wie lautet sie?"</div>
+      <input value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()} placeholder="Parole..." autoFocus
+        style={{background:"#041624",border:"2px solid #1e5a8a",color:"#e0f2fe",fontFamily:"'Press Start 2P',monospace",fontSize:"clamp(9px,1.8vw,14px)",padding:"10px 16px",outline:"none",width:220,textAlign:"center",borderRadius:2,textTransform:"uppercase"}}/>
+      {err&&<div style={{color:"#f87171",fontSize:"clamp(5px,.9vw,7px)"}}>{err}</div>}
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={go} style={G("#041a0c","#4ade80")}>▶ Bestätigen</button>
+        <button onClick={onCancel} style={G("#0a0a14","#475569")}>← Zurück</button>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════ APP ═══ */
+/* ═══════════════════════════════════════════════════ ÜBERGÄNGE ═══ */
+/* Legt sich kurz über den Bildschirm beim Wechsel. "battle" = Kachel-Wisch,
+   sonst weiches Abblenden. */
+function TransitionOverlay({kind,onCovered,onDone}){
+  const [ph,setPh]=useState(0); // 0 = einblenden (zudecken), 1 = aufdecken
+  useEffect(()=>{
+    const dur=kind==="battle"?420:300;
+    const a=setTimeout(()=>{onCovered&&onCovered();setPh(1);},dur);
+    const b=setTimeout(()=>{onDone&&onDone();},dur*2);
+    return()=>{clearTimeout(a);clearTimeout(b);};
+  },[]);
+  if(kind==="battle"){
+    const cols=6,rows=8,cells=[];
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+      const delay=((r+c)%(rows+cols))*22;
+      cells.push(
+        <div key={r+"-"+c} style={{
+          background:"#041427",
+          animation:`${ph===0?"tileIn":"tileOut"} .26s ease-in-out ${delay}ms both`}}/>
+      );
+    }
+    return(
+      <div style={{position:"fixed",inset:0,zIndex:500,pointerEvents:"none",
+        display:"grid",gridTemplateColumns:`repeat(${cols},1fr)`,gridTemplateRows:`repeat(${rows},1fr)`}}>
+        <style>{`@keyframes tileIn{from{transform:scale(0);opacity:.2}to{transform:scale(1.05);opacity:1}}
+                 @keyframes tileOut{from{transform:scale(1.05);opacity:1}to{transform:scale(0);opacity:0}}`}</style>
+        {cells}
+      </div>
+    );
+  }
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:500,pointerEvents:"none",background:"#020c18",
+      animation:`${ph===0?"fadeCover":"fadeReveal"} .3s ease-in-out both`}}>
+      <style>{`@keyframes fadeCover{from{opacity:0}to{opacity:1}}
+               @keyframes fadeReveal{from{opacity:1}to{opacity:0}}`}</style>
+    </div>
+  );
+}
+
+function AquariumMon(){
+  const [scr,setScr]=useState("title");
+  const [player,setPlayer]=useState(null);
+  const [dlg,setDlg]=useState(null);
+  const [curCity,setCurCity]=useState(null);
+  const [battle,setBattle]=useState(null);
+  const [showMenu,setShowMenu]=useState(false);
+  const [savedName,setSavedName]=useState(null);
+  const [toast,setToast]=useState("");
+  const [evolving,setEvolving]=useState(null); // {loc,idx,fromKey,toKey}
+  const evoReturnRef=useRef("overworld");
+  const toastTRef=useRef(null);
+  function showToast(txt,ms=2600){setToast(txt);clearTimeout(toastTRef.current);toastTRef.current=setTimeout(()=>setToast(""),ms);}
+  // XP an alle Team-Mons vergeben, Level-Ups sammeln
+  // EP bekommen nur Aquariummon, die am Kampf beteiligt waren – aufgeteilt unter ihnen
+  function awardXp(amount,participants){
+    setPlayer(p=>{
+      if(!p)return p;
+      const idx=(participants&&participants.length?participants:p.team.map((_,i)=>i))
+                  .filter(i=>i>=0&&i<p.team.length);
+      if(!idx.length)return p;
+      const share=Math.max(1,Math.round(amount/idx.length));
+      const ups=[];
+      const team=p.team.map((m,i)=>{
+        if(!idx.includes(i))return m;
+        const nm=grantXp(m,share);
+        if(nm._leveled)ups.push(`${nm.name} → Lv${nm.level}!`);
+        delete nm._leveled;return nm;
+      });
+      if(ups.length)AUDIO.sfx("levelup");
+      const who=idx.length===1?p.team[idx[0]].name:`${idx.length} Kämpfer`;
+      setTimeout(()=>showToast(ups.length?`⭐ ${ups.join("  ")}`:`+${share} EP · ${who}`),0);
+      return{...p,team};
+    });
+  }
+
+  // Check for existing save on mount
+  useEffect(()=>{loadSave().then(s=>{if(s)setSavedName(s.name);});},[]);
+
+  // Audio bei der ersten Nutzergeste freischalten (iOS/Chrome verlangen das)
+  useEffect(()=>{
+    const unlock=()=>{AUDIO.unlock();AUDIO.resume();};
+    window.addEventListener("pointerdown",unlock,{passive:true});
+    window.addEventListener("keydown",unlock);
+    window.addEventListener("touchstart",unlock,{passive:true});
+    return()=>{window.removeEventListener("pointerdown",unlock);window.removeEventListener("keydown",unlock);window.removeEventListener("touchstart",unlock);};
+  },[]);
+
+  // Passende Musik je Bildschirm
+  useEffect(()=>{
+    let track=null;
+    if(scr==="title"||scr==="character"||scr==="starter")track="title";
+    else if(scr==="overworld")track="overworld";
+    else if(scr==="city"||scr==="fishing")track="city";
+    else if(scr==="battle")track=battle?.walox?"legend":(battle?.rival||battle?.isTrainer)?"boss":"battle";
+    else if(scr==="legend"||scr==="rivalwin"||scr==="bregenzwin")track="victory";
+    if(scr==="dialogue"||scr==="evolve")return;   // laufende Musik weiterlaufen lassen
+    if(track)AUDIO.playMusic(track,true);else AUDIO.stopMusic(true);
+  },[scr,battle]);
+
+  // Auto-save when player changes
+  useEffect(()=>{
+    if(player&&scr!=="title"&&scr!=="character"){
+      saveGame({...player,owX:OW.pos.x,owY:OW.pos.y,owFacing:OW.facing})
+        .then(()=>setSavedName(player.name));
+    }
+  },[player]);
+
+  // Bildschirmwechsel mit Übergang. Der Zielbildschirm wird erst gesetzt,
+  // wenn der Vorhang zu ist – so sieht man kein Springen.
+  const [trans,setTrans]=useState(null); // {kind,to,phase:"in"|"out"}
+  const scrRef=useRef(scr);scrRef.current=scr;
+  const FADE_TO=new Set(["overworld","city","battle","fishing","legend","rivalend","rivalwin","bregenzwin","credits"]);
+  function go(target){
+    if(scrRef.current===target)return;
+    if(!FADE_TO.has(target)){setScr(target);return;}   // Menüs/Dialoge: sofort
+    setTrans({kind:target==="battle"?"battle":"fade",to:target,phase:"in"});
+  }
+  // Vorhang ist zu → Bildschirm wechseln, dann Vorhang öffnen
+  function transCovered(){
+    setTrans(t=>{
+      if(!t)return null;
+      setScr(t.to);
+      return {...t,phase:"out"};
+    });
+  }
+  function transDone(){setTrans(null);}
+  function showDlg(events,cb){setDlg({events,idx:0,cb});go("dialogue");}
+  function nextDlg(){const next=dlg.idx+1;if(next>=dlg.events.length){const cb=dlg.cb;setDlg(null);if(cb)cb();}else setDlg(d=>({...d,idx:next}));}
+
+  function startNew(){OW.pos={x:18*TS+TS/2,y:27*TS+TS/2};OW.facing="left";go("character");}
+  function onCharDone(name,gender){
+    setPlayer({name,gender,team:[],box:[],caught:[],seen:[],beaten:[],baits:[],rods:5,waloxUnlocked:false,waloxDefeated:false});
+    showDlg(DLGS[0],()=>go("starter"));
+  }
+  function onStarterPick(key){
+    setPlayer(p=>p?({...p,team:[mkMon(key)],caught:[key],seen:[key]}):p);
+    showDlg([
+      {spk:"Prof. Seestern",ico:"🧑‍🔬",txt:`Ausgezeichnete Wahl! ${MONS[key].name} wird dir treu zur Seite stehen.`},
+      {spk:(player?.name||"Du"),ico:"🎣",txt:"Auf zum Abenteuer! [WASD / Pfeiltasten zum Laufen]"},
+    ],()=>go("overworld"));
+  }
+  async function loadGame(){
+    const s=await loadSave();
+    if(!s)return;
+    if(s.owX){OW.pos={x:s.owX,y:s.owY};OW.facing=s.owFacing||"left";}
+    // backfill new fields for old saves (Box, Level/XP)
+    const fix=m=>({level:1,xp:0,...m,maxHp:m.maxHp||scaleStat(MONS[m.key]?.maxHp||40,m.level||1)});
+    const merged={seen:s.caught?[...s.caught]:[],baits:[],waloxUnlocked:false,waloxDefeated:false,box:[],musicOn:true,sfxOn:true,...s};
+    AUDIO.setMusic(merged.musicOn!==false);AUDIO.setSfx(merged.sfxOn!==false);
+    merged.team=(merged.team||[]).map(fix);merged.box=(merged.box||[]).map(fix);
+    setPlayer(merged);go("overworld");
+  }
+
+  // Gefangene kommen frisch ins Team: nie auf Entwicklungsstufe, damit Training nötig bleibt
+  function tameMon(mon){
+    const lv=Math.min(mon.level||1,MAXLV-1);          // höchstens Lv2 – Lv3 muss man selbst erspielen
+    const fresh=mkMon(mon.key,lv);
+    fresh.xp=LV_XP[lv-1]||0;                          // startet am Anfang seiner Stufe
+    return fresh;
+  }
+  // Neues Aquariummon erhalten: ins Team wenn Platz, sonst in die Box.
+  function gainMon(mon){
+    setPlayer(p=>{
+      if(!p)return p;
+      const caught=p.caught.includes(mon.key)?p.caught:[...p.caught,mon.key];
+      const seen=(p.seen||[]).includes(mon.key)?p.seen:[...(p.seen||[]),mon.key];
+      // Mehrfachfänge sind erlaubt – jedes gefangene Aquariummon wird behalten
+      if(p.team.length<3)return{...p,team:[...p.team,mon],caught,seen};
+      if((p.box||[]).length<BOX_MAX)return{...p,box:[...(p.box||[]),mon],caught,seen};
+      return{...p,caught,seen}; // kein Platz – nur Dex-Eintrag (durch Sperren normalerweise unmöglich)
+    });
+  }
+  function toBox(i){setPlayer(p=>{if(!p||p.team.length<=1||(p.box||[]).length>=BOX_MAX)return p;const team=[...p.team];const[m]=team.splice(i,1);return{...p,team,box:[...(p.box||[]),m]};});}
+  function toTeam(i){setPlayer(p=>{if(!p||p.team.length>=3)return p;const box=[...(p.box||[])];const[m]=box.splice(i,1);if(!m)return p;return{...p,team:[...p.team,m],box};});}
+  function reorderTeam(from,to){setPlayer(p=>{if(!p)return p;const t=[...p.team];if(to<0||to>=t.length)return p;const[m]=t.splice(from,1);t.splice(to,0,m);return{...p,team:t};});}
+  function releaseBox(i){setPlayer(p=>{if(!p)return p;const box=[...(p.box||[])];const[m]=box.splice(i,1);if(m)setTimeout(()=>showToast(`${m.name} wurde freigelassen.`),0);return{...p,box};});}
+  // Entwicklung starten (Level-3-Starter) → Sequenz-Screen
+  function onEvolve(loc,idx){
+    const src=(loc==="team"?player.team:player.box)||[];
+    const m=src[idx];if(!m||!EVO[m.key]||(m.level||1)<MAXLV)return;
+    evoReturnRef.current=scr;
+    setEvolving({loc,idx,fromKey:m.key,toKey:EVO[m.key]});
+    setShowMenu(false);go("evolve");
+  }
+  function applyEvolve(){
+    if(!evolving)return;
+    AUDIO.sfx("evolve");
+    const {loc,idx,toKey}=evolving;
+    setPlayer(p=>{
+      if(!p)return p;
+      const arr=[...(loc==="team"?p.team:p.box)];
+      const old=arr[idx];if(!old){return p;}
+      const nm=mkMon(toKey,MAXLV);nm.xp=LV_XP[MAXLV-1]||0; // bleibt auf Max-Level
+      arr[idx]=nm;
+      const caught=p.caught.includes(toKey)?p.caught:[...p.caught,toKey];
+      const seen=(p.seen||[]).includes(toKey)?p.seen:[...(p.seen||[]),toKey];
+      return loc==="team"?{...p,team:arr,caught,seen}:{...p,box:arr,caught,seen};
+    });
+    const ret=evoReturnRef.current;setEvolving(null);go(ret==="city"?"city":"overworld");
+  }
+  // Prof. Seestern (Konstanz) → Parole-Eingabe
+  function onSeestern(){go("parole");}
+  function devUnlockAll(){
+    setPlayer(p=>{
+      if(!p)return p;
+      const allKeys=[...BASE_KEYS,"walox"];
+      const box=allKeys.map(k=>mkMon(k,MAXLV)); // alle auf Max-Level, unentwickelt
+      const caught=Array.from(new Set([...(p.caught||[]),...allKeys]));
+      const seen=Array.from(new Set([...(p.seen||[]),...allKeys]));
+      const beaten=CITIES.filter(c=>!c.rival).map(c=>c.id); // alle Städte-Bosse, nicht Yuri
+      const baits=Object.keys(BAITS);
+      return{...p,box:box.slice(0,BOX_MAX),caught,seen,beaten,baits,waloxUnlocked:true,waloxDefeated:true};
+    });
+    setTimeout(()=>showToast("🔧 Entwickler-Testmodus aktiviert!",3200),60);
+    setCurCity(null);go("overworld");
+  }
+  // Kein Platz für ein neues Aquariummon (Team voll UND Box voll)
+  const noRoom=(player?.team?.length||0)>=3 && (player?.box?.length||0)>=BOX_MAX;
+
+  function enterTown(city){AUDIO.sfx("door");setCurCity(city);go("city");}
+  function fightTrainer(city){
+    const B=city.boss;
+    if(city.rival){
+      // Yuri ist immer besiegbar, aber die härteste Prüfung im Spiel
+      const evoCount=STARTER_EVOS.filter(k=>(player?.team||[]).some(m=>m.key===k)).length;
+      const tough=(B.tough||1.3)*(1-evoCount*0.06); // mit entwickelten Startern etwas milder
+      const rivalMons=B.mons.map(k=>{const m=mkMon(k,B.lv||3);m.maxHp=m.hp=Math.round(m.maxHp*tough);m.atk=Math.round(m.atk*(1+(tough-1)*0.55));return m;});
+      setBattle({isTrainer:true,trainerName:B.name,enemies:rivalMons,cityId:null,finale:false,rival:true});
+      showDlg(evoCount===3?[
+        {spk:B.name,ico:"🥷",txt:"Du kommst mit voll entwickelten Startern? Endlich ein echtes Duell!"},
+        {spk:(player?.name||"Du"),ico:"🎣",txt:"Koidrako, Barrakoloss, Salmorai — machen wir's, Yuri!"},
+      ]:[
+        {spk:B.name,ico:"🥷",txt:"Ah, der berühmte Angler vom Bodensee. Ich bin Yuri, dein Rivale."},
+        {spk:B.name,ico:"🥷",txt:"Meine Aquariummon sind alle voll entwickelt. Zeig mir, was du draufhast!"},
+        {spk:(player?.name||"Du"),ico:"🎣",txt:"Das werden wir sehen!"},
+      ],()=>go("battle"));
+      return;
+    }
+    // Städte-Bosse: steigende Level, größere Teams, mehr Zähigkeit
+    const t=B.tough||1;
+    const bossMons=B.mons.map(k=>{const m=mkMon(k,B.lv||1);m.maxHp=m.hp=Math.round(m.maxHp*t);m.atk=Math.round(m.atk*(1+(t-1)*0.6));return m;});
+    setBattle({isTrainer:true,trainerName:B.name,enemies:bossMons,cityId:city.id,finale:!!city.finale,bait:city.bait});
+    DLGS[city.si]?showDlg(DLGS[city.si],()=>go("battle")):go("battle");
+  }
+  function centerHeal(){AUDIO.sfx("heal");setPlayer(p=>p?({...p,team:p.team.map(m=>({...m,hp:m.maxHp})),rods:Math.max(p.rods||0,5)}):p);}
+  function exitCity(){if(curCity){OW.pos={x:curCity.ex*TS+TS/2,y:curCity.ey*TS+TS/2};OW.facing="down";}setCurCity(null);go("overworld");}
+  function markSeen(monKey){setPlayer(p=>p&&!(p.seen||[]).includes(monKey)?({...p,seen:[...(p.seen||[]),monKey]}):p);}
+  function owWild(monKey){
+    markSeen(monKey);
+    // Wildes Level folgt dem Fortschritt UND dem Team – nie stärker als das eigene Beste
+    const prog=(player?.baits||[]).length;
+    const byProg=prog>=4?3:prog>=2?2:1;
+    const best=Math.max(1,...(player?.team||[]).map(m=>m.level||1));
+    const lv=Math.max(1,Math.min(byProg,best));
+    setBattle({isTrainer:false,enemies:[mkMon(monKey,lv)],cityId:null,finale:false});go("battle");
+  }
+  function startWalox(){
+    showDlg([
+      {spk:"???",ico:"🌊",txt:"Das Wasser der Seemitte beginnt zu brodeln..."},
+      {spk:"Walox",ico:"🐳",txt:"Ein gewaltiger Schatten steigt empor — der legendäre Walox!"},
+      {spk:(player?.name||"Du"),ico:"🎣",txt:"Als bester Angler nehme ich die Herausforderung an!"},
+    ],()=>{
+      const w=mkMon("walox",3);
+      w.maxHp=w.hp=Math.round(w.maxHp*1.4);w.atk=Math.round(w.atk*1.1);w.def=Math.round(w.def*1.1);
+      setBattle({isTrainer:true,trainerName:"⭐ Legendär",enemies:[w],cityId:null,finale:false,walox:true});go("battle");
+    });
+  }
+  // Strudel betreten (nachdem Walox bezwungen) → Bester-Angler-Bildschirm
+  function enterStrudel(){go("legend");}
+  function continuePlaying(){setCurCity(null);go("overworld");}
+  // Nach dem Bester-Angler-Bildschirm: Hinweis auf Ravensburg & weitere Seen
+  function legendContinue(){
+    setCurCity(null);
+    showDlg([
+      {spk:"Prof. Seestern",ico:"🧑‍🔬",txt:"Du hast Walox bezwungen — der beste Angler am ganzen Bodensee!"},
+      {spk:"Prof. Seestern",ico:"🧑‍🔬",txt:"Im Norden liegt Ravensburg. Dort soll ein starker Rivale auf dich warten."},
+      {spk:"Prof. Seestern",ico:"🧑‍🔬",txt:"Und denk dran: Der Bodensee ist nicht der einzige See. Sieh dich ruhig weiter um!"},
+    ],()=>go("overworld"));
+  }
+
+  function onBattleWin(cityId,isFinale,caughtMon,participants){
+    AUDIO.sfx("win");
+    const enemyLv=(battle?.enemies||[]).reduce((a,e)=>a+(e.level||1),0)||1;
+    const xpGain=battle?.walox?420:battle?.rival?400:battle?.isTrainer?(40*enemyLv):(26*(battle?.enemies?.[0]?.level||1));
+    awardXp(xpGain,participants);
+    if(caughtMon)gainMon(tameMon(caughtMon));
+    if(cityId)setPlayer(p=>{
+      const beaten=p.beaten.includes(cityId)?p.beaten:[...p.beaten,cityId];
+      const bait=battle?.bait;
+      const baits=bait&&!(p.baits||[]).includes(bait)?[...(p.baits||[]),bait]:(p.baits||[]);
+      return{...p,beaten,baits};
+    });
+    setPlayer(p=>p?({...p,team:p.team.map(m=>({...m,hp:Math.min(m.maxHp,m.hp+Math.floor(m.maxHp*.15))}))}):p);
+    // Rivale Yuri bezwungen (nur mit 3 entwickelten Startern möglich)
+    if(battle?.rival){go("rivalwin");return;}
+    // Walox bezwungen → er bittet darum, dem Team beizutreten
+    if(battle?.walox){
+      setPlayer(p=>p?({...p,waloxDefeated:true}):p);
+      showDlg([
+        {spk:"Walox",ico:"🐳",txt:"Du hast mich im ehrlichen Kampf bezwungen, Angler."},
+        {spk:"Walox",ico:"🐳",txt:"Selten traf ich auf solche Stärke. Ich möchte fortan an DEINER Seite kämpfen!"},
+        {spk:"Walox",ico:"🐳",txt:"Nimm mich in dein Team auf — gemeinsam beschützen wir den Bodensee."},
+        {spk:(player?.name||"Du"),ico:"🎣",txt:"Willkommen im Team, Walox!"},
+      ],()=>{gainMon(mkMon("walox",3));setTimeout(()=>showToast("🐳 Walox ist deinem Team beigetreten!",3200),60);go("overworld");});
+      return;
+    }
+    if(isFinale){setPlayer(p=>p?({...p,waloxUnlocked:true}):p);go("bregenzwin");return;}
+    if(curCity)go("city");else go("overworld");
+  }
+  function onFishCaught(k){AUDIO.sfx("catch");gainMon(tameMon(mkMon(k,2)));setPlayer(p=>p?({...p,rods:Math.max(0,(p.rods||0)-1)}):p);go("city");}
+  function onGameOver(){
+    AUDIO.sfx("lose");
+    setPlayer(p=>p?({...p,team:p.team.map(m=>({...m,hp:Math.floor(m.maxHp*.5)}))}):p);
+    if(battle?.rival){go("rivalend");return;} // gegen den Rivalen verloren → Ausblick/Feedback
+    go(battle?.walox?"overworld":curCity?"city":"overworld");
+  }
+  async function doSave(){if(player)await saveGame({...player,owX:OW.pos.x,owY:OW.pos.y,owFacing:OW.facing});}
+  // Nach Bregenz-Sieg zurück in die Welt, Spieler erscheint am Bregenz-Ausgang
+  function continueAfterBregenz(){const b=CITIES.find(c=>c.id==="bregenz");if(b){OW.pos={x:b.ex*TS+TS/2,y:b.ey*TS+TS/2};OW.facing="down";}setCurCity(null);go("overworld");}
+
+  const baitBonus=(player?.baits||[]).reduce((s,bk)=>s+(BAITS[bk]?.bonus||0),0);
+  // Bregenz (Finale) erst betretbar, wenn alle 4 anderen Köder gesammelt sind
+  function cityEntryGate(city){
+    if(city.id==="bregenz"){
+      const need=["wurm","insekt","spinner","blinker"];
+      const have=player?.baits||[];
+      const missing=need.filter(b=>!have.includes(b));
+      if(missing.length>0) return `🔒 Bregenz versiegelt! Erst alle ${need.length} Köder sammeln (${need.length-missing.length}/${need.length}).`;
+    }
+    if(city.id==="ravensburg"&&!player?.waloxDefeated){
+      return "🔒 Ravensburg ist noch verschlossen. Beweise dich erst überall am Bodensee.";
+    }
+    return null;
+  }
+
+  return(
+    <div style={{width:"100%",height:"100dvh",overflow:"hidden",fontFamily:"'Press Start 2P',monospace",background:"#020c18"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');*{box-sizing:border-box;margin:0;padding:0}button{cursor:pointer}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#0e4a7a}@keyframes monIdle{from{transform:translateY(0)}to{transform:translateY(-5px)}}`}</style>
+      {scr==="title"    &&<TitleScreen onNewGame={startNew} onLoad={loadGame} savedName={savedName}/>}
+      {scr==="character"&&<CharacterScreen onDone={onCharDone}/>}
+      {scr==="starter"  &&player&&<StarterScreen playerName={player.name} onPick={onStarterPick}/>}
+      {scr==="dialogue" &&dlg&&<DialogueScreen state={dlg} playerName={player?.name} playerGender={player?.gender} onNext={nextDlg}/>}
+      {scr==="overworld"&&player&&<OverworldScreen player={player} onEnterTown={enterTown} onWild={owWild} onMenu={()=>setShowMenu(true)} canEnter={cityEntryGate} onWalox={startWalox} onStrudel={enterStrudel}/>}
+      {scr==="city"     &&curCity&&player&&<CityInterior city={curCity} player={player} beaten={player.beaten.includes(curCity.id)} onArena={()=>fightTrainer(curCity)} onCenter={centerHeal} onFish={()=>go("fishing")} onExit={exitCity} onMenu={()=>setShowMenu(true)} onSeestern={onSeestern}/>}
+      {scr==="fishing"  &&curCity&&player&&<FishingScreen city={curCity} baitBonus={baitBonus} onCaught={onFishCaught} onBack={()=>go("city")}/>}
+      {scr==="battle"   &&battle&&player&&<BattleScreen data={battle} player={player} onWin={onBattleWin} onLose={onGameOver}/>}
+      {scr==="evolve"   &&evolving&&<EvolveScreen fromKey={evolving.fromKey} toKey={evolving.toKey} onDone={applyEvolve}/>}
+      {scr==="parole"   &&<ParoleScreen onSubmit={devUnlockAll} onCancel={()=>go(curCity?"city":"overworld")}/>}
+      {scr==="bregenzwin"&&<CreditsScreen onRestart={continueAfterBregenz}/>}
+      {scr==="legend"   &&<LegendScreen onRestart={()=>{deleteSave();setPlayer(null);setSavedName(null);go("title");}} onContinue={legendContinue}/>}
+      {scr==="rivalend" &&<RivalEndScreen onContinue={continuePlaying}/>}
+      {scr==="rivalwin" &&<RivalWinScreen onContinue={continuePlaying}/>}
+      {showMenu&&player&&<MenuScreen player={player} onClose={()=>setShowMenu(false)} onSave={doSave} onToBox={toBox} onToTeam={toTeam} onRelease={releaseBox} onEvolve={onEvolve} onReorder={reorderTeam} onAudio={(mu,sx)=>setPlayer(p=>p?({...p,musicOn:mu,sfxOn:sx}):p)}/>}
+      {toast&&<div style={{position:"fixed",top:"calc(env(safe-area-inset-top, 0px) + 10px)",left:"50%",transform:"translateX(-50%)",zIndex:300,background:"rgba(2,12,24,.95)",border:"1px solid #a78bfa",color:"#ddd6fe",fontSize:"clamp(6px,1.2vw,10px)",fontFamily:"'Press Start 2P',monospace",padding:"8px 14px",borderRadius:6,whiteSpace:"nowrap",boxShadow:"0 0 18px #7c3aed55"}}>{toast}</div>}
+      {trans&&<ScreenTransition trans={trans} onCovered={transCovered} onDone={transDone}/>}
+    </div>
+  );
+}
+
+try{
+  const rootEl=document.getElementById('root');
+  const root = ReactDOM.createRoot(rootEl);
+  root.render(<AquariumMon/>);
+  const l=document.getElementById('loading'); if(l)l.style.display='none';
+}catch(e){
+  showErr(e.message||String(e));
+}
+</script>
+
+<script>
+// If after 6s React/Babel never ran (e.g. blocked CDN), surface a helpful message
+setTimeout(function(){
+  if(window.__failed)return;
+  if(typeof React==='undefined'||typeof ReactDOM==='undefined'){showErr('React/Babel wurden nicht geladen (CDN blockiert?). Seite neu laden oder anderes Netz versuchen.');return;}
+  var l=document.getElementById('loading');
+  if(l&&l.style.display!=='none'){showErr('Das Spiel konnte nicht initialisiert werden. Bitte Seite neu laden.');}
+},6000);
+</script>
+</body>
+</html>
