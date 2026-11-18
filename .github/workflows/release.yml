@@ -1,0 +1,48 @@
+name: Release
+
+# Bei jedem neuen Stand auf main: Tag vN + GitHub-Release mit der HTML-Datei anlegen
+# (nur wenn es den Tag noch nicht gibt). So ist jeder Stand dauerhaft gesichert.
+on:
+  push:
+    branches: [main]
+    paths: [index.html]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check.mjs index.html
+      - name: Version lesen
+        id: v
+        run: |
+          VER=$(grep -oP 'const\s+GAME_VERSION\s*=\s*"\Kv\d+' index.html)
+          LINE=$(grep -m1 "^## $VER · " CHANGELOG.md)
+          DATE=$(echo "$LINE" | awk -F' · ' '{print $2}')
+          TITLE=$(echo "$LINE" | awk -F' · ' '{print $3}')
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$VER" >/dev/null; then echo "exists=1" >> "$GITHUB_OUTPUT"; fi
+      - name: Release anlegen
+        if: steps.v.outputs.exists != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.v.outputs.ver }}
+          DATE: ${{ steps.v.outputs.date }}
+          TITLE: ${{ steps.v.outputs.title }}
+        run: |
+          FILE="aquariummon_${VER}_${DATE}.html"
+          cp index.html "$FILE"
+          awk -v h="## $VER · " 'index($0,h)==1{on=1;next} on&&/^## /{exit} on' CHANGELOG.md > notes.md
+          printf '\n▶ Spielen: https://maofoso.github.io/aquariummon/versions/%s/\n' "$VER" >> notes.md
+          gh release create "$VER" "$FILE" --target "$GITHUB_SHA" --title "$VER · $DATE · $TITLE" --notes-file notes.md

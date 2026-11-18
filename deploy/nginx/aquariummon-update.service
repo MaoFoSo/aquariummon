@@ -1,0 +1,11 @@
+[Unit]
+Description=AquariumMon: neuesten Stand von GitHub holen
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Benutzer, dem /var/www/aquariummon gehört (z. B. www-data oder dein eigener Benutzer)
+User=www-data
+Environment=AQM_DIR=/var/www/aquariummon
+ExecStart=/usr/local/bin/aquariummon-update.sh

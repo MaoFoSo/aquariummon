@@ -1,0 +1,12 @@
+[Unit]
+Description=AquariumMon regelmäßig aktualisieren
+
+[Timer]
+# Die tägliche Version kommt gegen 06:45 (Europa/Berlin). Zusätzlich alle 30 Minuten prüfen,
+# damit auch Korrekturen untertags ankommen.
+OnCalendar=*-*-* 06:55:00
+OnCalendar=*:0/30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
