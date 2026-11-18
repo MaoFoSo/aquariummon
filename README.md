@@ -11,12 +11,11 @@ Ein Browser-RPG rund um den Bodensee (auf Deutsch): Aquariummon fangen, angeln, 
 
 ## Wie die tägliche Weiterentwicklung abläuft
 
-Eine geplante Claude-Aufgabe („AquariumMon täglich“) baut jeden Morgen **ein** neues Feature ein:
+Jeden Morgen kommt **ein** neues Feature dazu, jede Woche zusätzlich ein neues Aquariummon:
 
 ```
 feature/v17-2026-11-19  ──PR──▶  main  ──▶  GitHub Pages (sofort spielbar)
-                                   │──▶  Release + Tag v17 (Originaldatei)
-                                   └──▶  nginx zu Hause holt sich den Stand
+                                   └──▶  Release + Tag v17 (Originaldatei)
 ```
 
 1. Neuer Branch `feature/vN-JJJJ-MM-TT` von `main`.
@@ -32,27 +31,6 @@ feature/v17-2026-11-19  ──PR──▶  main  ──▶  GitHub Pages (sofort
 - **Git-Historie + Tag `vN`** – der exakte Code jedes Tages (`git checkout v12`).
 - **Release-Datei** – die Originaldatei zum Herunterladen.
 - **`versions/vN/`** – sofort spielbar. Diese Kopien nutzen einen eigenen Spielstand (`aquamon_save_vN`), damit das Ausprobieren alter Versionen den Hauptspielstand (`aquamon_save`) nicht überschreibt.
-
-## Lokaler Test auf nginx
-
-Die Dateien liegen in [`deploy/nginx/`](deploy/nginx/). Auf dem Rechner mit nginx:
-
-```bash
-sudo install -m 755 deploy/nginx/aquariummon-update.sh /usr/local/bin/aquariummon-update.sh
-sudo mkdir -p /var/www/aquariummon && sudo chown www-data: /var/www/aquariummon
-sudo -u www-data /usr/local/bin/aquariummon-update.sh
-sudo cp deploy/nginx/aquariummon.conf /etc/nginx/sites-available/aquariummon
-sudo ln -s /etc/nginx/sites-available/aquariummon /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-sudo cp deploy/nginx/aquariummon-update.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now aquariummon-update.timer
-```
-
-Danach holt sich der Server alle 30 Minuten (und um 06:55 Uhr) automatisch den neuesten Stand von `main`. Ohne systemd geht es auch per Cron:
-
-```
-*/30 * * * * /usr/local/bin/aquariummon-update.sh >> /var/log/aquariummon-update.log 2>&1
-```
 
 ## Alte Versionen nachtragen
 
@@ -73,6 +51,4 @@ versions/vN/index.html   spielbare Archivkopien, versions/index.html = Übersich
 CHANGELOG.md             alle Features pro Version
 scripts/check.mjs        Prüfung vor jeder Veröffentlichung
 scripts/archive.mjs      Archivkopie + Übersicht erzeugen
-deploy/nginx/            Update-Skript, nginx-Konfiguration, systemd-Timer
-docs/daily-task.md       Anleitung der täglichen Claude-Aufgabe
 ```
