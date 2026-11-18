@@ -10,6 +10,12 @@ Format jeder Überschrift: `## vN · JJJJ-MM-TT · Titel` (wird von `scripts/arc
 
 <!-- NEUE EINTRÄGE HIER OBEN EINFÜGEN -->
 
+## v17 · 2026-11-18 · Seebuch & ohne fremde Server
+
+Der Aquariumdex heißt jetzt **Seebuch** (📖 SEEBUCH im Menü, Erfolg „Seebuch-Meister“, Seebuch-Belohnungen). Das Zeppelin-Museum in Friedrichshafen heißt jetzt **Luftschiff-Museum**. Schrift, React und three.js liegen jetzt direkt im Spiel (`vendor/`): Beim Spielen werden keine Verbindungen mehr zu Google Fonts oder anderen fremden Servern aufgebaut. Bestehende Spielstände bleiben gültig.
+
+**So findest du es:** Menü → 📖 SEEBUCH.
+
 ## v16 · 2026-11-18 · Fangbuch
 
 Jeder Fang wird gezählt. Im 📖 DEX-Steckbrief steht „Gefangen: N×“ je Art, im DEX-Kopf die Gesamtzahl aller Fänge. Neuer Erfolg **„Serienfänger“** für 25 Fänge insgesamt.

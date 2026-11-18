@@ -18,9 +18,9 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
 </style>
 <div id="root"></div>
 <div id="err"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="../../vendor/react-18.2.0.production.min.js"></script>
+<script src="../../vendor/react-dom-18.2.0.production.min.js"></script>
+<script src="../../vendor/three-r128.min.js"></script>
 <script>
 /* CHANGELOG
    v1 · 2026-11-03 · Ausgangsversion (Konstanz–Bregenz, Ravensburg, Unterwasserwelt, Walox, Rivale Yuri)
@@ -11352,7 +11352,7 @@ function AquariumMon() {
       fontFamily: "'Press Start 2P',monospace",
       background: "#020c18"
     }
-  }, /*#__PURE__*/React.createElement("style", null, `@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');*{box-sizing:border-box;margin:0;padding:0}button{cursor:pointer}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#0e4a7a}@keyframes monIdle{from{transform:translateY(0)}to{transform:translateY(-5px)}}`), scr === "title" && /*#__PURE__*/React.createElement(TitleScreen, {
+  }, /*#__PURE__*/React.createElement("style", null, `@font-face{font-family:'Press Start 2P';font-style:normal;font-weight:400;font-display:swap;src:url(../../vendor/fonts/press-start-2p-latin-400-normal.woff2) format('woff2')}*{box-sizing:border-box;margin:0;padding:0}button{cursor:pointer}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#0e4a7a}@keyframes monIdle{from{transform:translateY(0)}to{transform:translateY(-5px)}}`), scr === "title" && /*#__PURE__*/React.createElement(TitleScreen, {
     onNewGame: startNew,
     onLoad: loadGame,
     savedName: savedName

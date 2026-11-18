@@ -33,9 +33,9 @@ window.addEventListener('error',function(ev){
 function libFail(name){return function(){showErr('Konnte '+name+' nicht laden. Bitte Internetverbindung prüfen und Seite neu laden.');};}
 </script>
 
-<script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js" crossorigin onerror="libFail('React')()"></script>
-<script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin onerror="libFail('ReactDOM')()"></script>
-<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js" crossorigin onerror="libFail('Babel')()"></script>
+<script src="../../vendor/react-18.2.0.production.min.js" onerror="libFail('React')()"></script>
+<script src="../../vendor/react-dom-18.2.0.production.min.js" onerror="libFail('ReactDOM')()"></script>
+<script src="../../vendor/babel-standalone-7.24.7.min.js" onerror="libFail('Babel')()"></script>
 
 <script type="text/babel" data-presets="react">
 const {useState,useEffect,useRef} = React;
@@ -2496,7 +2496,7 @@ function AquariumMon(){
 
   return(
     <div style={{width:"100%",height:"100dvh",overflow:"hidden",fontFamily:"'Press Start 2P',monospace",background:"#020c18"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');*{box-sizing:border-box;margin:0;padding:0}button{cursor:pointer}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#0e4a7a}@keyframes monIdle{from{transform:translateY(0)}to{transform:translateY(-5px)}}`}</style>
+      <style>{`@font-face{font-family:'Press Start 2P';font-style:normal;font-weight:400;font-display:swap;src:url(../../vendor/fonts/press-start-2p-latin-400-normal.woff2) format('woff2')}*{box-sizing:border-box;margin:0;padding:0}button{cursor:pointer}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#0e4a7a}@keyframes monIdle{from{transform:translateY(0)}to{transform:translateY(-5px)}}`}</style>
       {scr==="title"    &&<TitleScreen onNewGame={startNew} onLoad={loadGame} savedName={savedName}/>}
       {scr==="character"&&<CharacterScreen onDone={onCharDone}/>}
       {scr==="starter"  &&player&&<StarterScreen playerName={player.name} onPick={onStarterPick}/>}

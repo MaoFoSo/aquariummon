@@ -43,6 +43,8 @@ const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(e.message));
+const externalRequests = [];
+page.on("request", (r) => { if (!r.url().startsWith("file:") && !r.url().startsWith("data:")) externalRequests.push(r.url()); });
 await page.route("https://cdnjs.cloudflare.com/ajax/libs/**", async (route) => {
   const key = route.request().url().split("/ajax/libs/")[1];
   if (!CDN[key]) return route.continue();
@@ -74,6 +76,7 @@ if (!state.react) problems.push("React wurde nicht geladen (CDN erreichbar?)");
 if (state.err) problems.push("Fehleranzeige: " + state.err);
 if (!state.rendered) problems.push("#root ist leer – das Spiel wurde nicht gerendert");
 problems.push(...pageErrors.map((m) => "JS-Fehler: " + m));
+if (process.env.ALLOW_EXTERNAL !== "1") problems.push(...[...new Set(externalRequests)].map((u) => "Externe Anfrage: " + u));
 
 if (problems.length) {
   console.error("✗ Browser-Test fehlgeschlagen:\n- " + problems.join("\n- "));

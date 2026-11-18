@@ -43,6 +43,10 @@ const last = entries[entries.length - 1];
 if (ver && last && last[1] !== ver)
   errors.push(`GAME_VERSION ist ${ver}, letzter CHANGELOG-Eintrag aber ${last[1]}.`);
 
+// Keine Inhalte von fremden Servern laden (Datenschutz): alles muss im Repo liegen (vendor/).
+const external = [...html.matchAll(/(?:src|href)\s*=\s*["'](https?:)?\/\/[^"']+|url\(\s*["']?(?:https?:)?\/\/[^)"']+|@import\s+url\(\s*["']?https?:[^)"']+/gi)].map((m) => m[0]);
+if (external.length) errors.push("Externe Ressourcen gefunden (bitte lokal unter vendor/ ablegen):\n  " + [...new Set(external)].join("\n  "));
+
 const root = resolve(".");
 if (file === join(root, "index.html") && ver && existsSync("CHANGELOG.md")) {
   const md = readFileSync("CHANGELOG.md", "utf8");

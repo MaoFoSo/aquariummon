@@ -47,8 +47,16 @@ Danach `node scripts/archive.mjs` ausführen (baut die Übersicht neu) und commi
 
 ```
 index.html               das Spiel (neueste Version)
+vendor/                  Schrift, React, three.js (lokal, damit keine fremden Server geladen werden)
+vendor/licenses/         Lizenzen dieser Bibliotheken (MIT bzw. SIL OFL)
 versions/vN/index.html   spielbare Archivkopien, versions/index.html = Übersicht
 CHANGELOG.md             alle Features pro Version
 scripts/check.mjs        Prüfung vor jeder Veröffentlichung
 scripts/archive.mjs      Archivkopie + Übersicht erzeugen
 ```
+
+## Datenschutz & Lizenzen
+
+Das Spiel lädt nichts von fremden Servern: Schrift (Press Start 2P, SIL Open Font License), React 18 (MIT), three.js r128 (MIT) und für v0 Babel Standalone (MIT) liegen unter `vendor/`, die Lizenztexte unter `vendor/licenses/`. Der Spielstand wird nur im eigenen Browser gespeichert (localStorage). `scripts/check.mjs` und der Browser-Test schlagen fehl, sobald eine externe Ressource auftaucht.
+
+AquariumMon ist ein privates, nicht-kommerzielles Fan-Projekt. Orte und Wahrzeichen sind dem echten Bodensee nachempfunden; Figuren, Namen und Grafiken sind eigene Erfindungen.

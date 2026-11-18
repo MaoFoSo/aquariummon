@@ -13,7 +13,11 @@ const ver = (html.match(/const\s+GAME_VERSION\s*=\s*"(v\d+)"/) || [])[1];
 if (!ver) throw new Error("GAME_VERSION nicht gefunden");
 
 mkdirSync(`versions/${ver}`, { recursive: true });
-const archived = html.replaceAll('"aquamon_save"', `"aquamon_save_${ver}"`);
+// Eigener Spielstand je Archivversion; lokale Dateien liegen zwei Ebenen höher (../../vendor/).
+const archived = html
+  .replaceAll('"aquamon_save"', `"aquamon_save_${ver}"`)
+  .replaceAll('src="vendor/', 'src="../../vendor/')
+  .replaceAll("url(vendor/", "url(../../vendor/");
 writeFileSync(`versions/${ver}/index.html`, archived);
 console.log(`✓ versions/${ver}/index.html gesichert`);
 

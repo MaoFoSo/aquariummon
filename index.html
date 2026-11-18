@@ -18,9 +18,9 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
 </style>
 <div id="root"></div>
 <div id="err"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="vendor/react-18.2.0.production.min.js"></script>
+<script src="vendor/react-dom-18.2.0.production.min.js"></script>
+<script src="vendor/three-r128.min.js"></script>
 <script>
 /* CHANGELOG
    v1 · 2026-11-03 · Ausgangsversion (Konstanz–Bregenz, Ravensburg, Unterwasserwelt, Walox, Rivale Yuri)
@@ -39,9 +39,10 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
    v14 · 2026-11-16 · NEU: Schillernde Aquariummon – jedes wilde Aquariummon (Oberwelt, Angeln, Unterwasser) ist mit 1/16 Chance schillernd (✨, andere Farbe); gefangene Schillernde behalten ihren Glanz im Team/in der Box, auch nach der Entwicklung; Zähler im 📖 DEX; neuer Erfolg „Glückspilz“.
    v15 · 2026-11-17 · NEU: Wahrzeichen-Wissen – wer ein Wahrzeichen entdeckt, erfährt dazu einen Wissenshappen (Meldung beim Entdecken); im 🗺️-Atlas steht der Steckbrief jedes entdeckten Wahrzeichens unter der jeweiligen Stadt.
    v16 · 2026-11-18 · NEU: Fangbuch – jeder Fang wird gezählt; im 📖 DEX-Steckbrief steht „Gefangen: N×“ je Art, im DEX-Kopf die Gesamtzahl der Fänge; neuer Erfolg „Serienfänger“ für 25 Fänge insgesamt.
+   v17 · 2026-11-18 · Eigenständiger und datenschutzfreundlich: Schrift und Bibliotheken liegen jetzt im Spiel selbst (keine Verbindungen zu Google oder anderen CDNs mehr); der Aquariumdex heißt jetzt „Seebuch“ (📖-Tab), das Zeppelin-Museum heißt „Luftschiff-Museum“.
 */
 try{
-const GAME_VERSION = "v16";
+const GAME_VERSION = "v17";
 const {
   useState,
   useEffect,
@@ -1074,7 +1075,7 @@ const DLGS = [[{
 }], [{
   spk: "BM Wellen",
   ico: "👩‍💼",
-  txt: "Team Angler nutzt den Zeppelin-Steg!"
+  txt: "Team Angler nutzt den Luftschiff-Steg!"
 }, {
   spk: "Boss Dorsch",
   ico: "🦹",
@@ -1109,7 +1110,7 @@ const DLGS = [[{
 const ACHIEVEMENTS = [
   {id:"erster_fang",ico:"🎣",name:"Erster Fang",desc:"Fange dein erstes Aquariummon.",test:p=>(p.caught||[]).length>=2},
   {id:"sammler",ico:"📖",name:"Sammler",desc:"Fange 8 verschiedene Arten.",test:p=>BASE_KEYS.filter(k=>(p.caught||[]).includes(k)).length>=8},
-  {id:"dex_komplett",ico:"🏆",name:"Dex-Meister",desc:"Vervollständige den Aquariumdex.",test:p=>dexComplete(p)},
+  {id:"dex_komplett",ico:"🏆",name:"Seebuch-Meister",desc:"Vervollständige das Seebuch.",test:p=>dexComplete(p)},
   {id:"erster_koeder",ico:"🪝",name:"Köder-Anfänger",desc:"Besiege den ersten Arena-Boss.",test:p=>(p.baits||[]).length>=1},
   {id:"koeder_meister",ico:"🔱",name:"Köder-Meister",desc:"Sammle alle 5 Köder.",test:p=>(p.baits||[]).length>=Object.keys(BAITS).length},
   {id:"taucher",ico:"🤿",name:"Taucher",desc:"Erhalte die Tauchmaske.",test:p=>((p.items||{}).tauchmaske||0)>0},
@@ -1127,7 +1128,7 @@ const ACHIEVEMENTS = [
   {id:"auftragsprofi",ico:"📜",name:"Auftragsprofi",desc:"Erledige 5 Tagesaufträge.",test:p=>(p.questCount||0)>=5},
   {id:"glueckspilz",ico:"✨",name:"Glückspilz",desc:"Fange ein schillerndes Aquariummon.",test:p=>(p.shinyCount||0)>=1},
   {id:"zeitreisender",ico:"⏰",name:"Zeitreisender",desc:"Fange alle 4 Tageszeit-Gäste (Haubi, Läufi, Zanderan, Welsio).",test:p=>Object.keys(TIME_GUESTS).reduce((a,ph)=>a.concat(TIME_GUESTS[ph]),[]).every(k=>(p.caught||[]).includes(k))},
-  {id:"serienfaenger",ico:"🎯",name:"Serienfänger",desc:"Fange insgesamt 25 Aquariummon (Fangbuch im 📖 DEX).",test:p=>(p.catchTotal||0)>=25}
+  {id:"serienfaenger",ico:"🎯",name:"Serienfänger",desc:"Fange insgesamt 25 Aquariummon (Fangbuch im 📖 Seebuch).",test:p=>(p.catchTotal||0)>=25}
 ];
 /* DEX-STECKBRIEFE (v9) */
 const DEX_INFO = {
@@ -1394,7 +1395,7 @@ const CITY_PLANS = {
     }],
     lamps: [[4, 10], [10, 10], [16, 10]]
   },
-  // FRIEDRICHSHAFEN — lange Uferpromenade, Zeppelin-Museum, Moleturm am Hafen
+  // FRIEDRICHSHAFEN — lange Uferpromenade, Luftschiff-Museum, Moleturm am Hafen
   fhafen: {
     plan: ["####################", "#..,,,,,,,,,,,,,,..#", "#.,,,,LLLL,,,,,,,,.#", "#.,HH,LLLL,,,,HHH,.#", "#.,HH,,,A,,,,,HHH,.#", "#.,,,,,,,,,,,,,,C,.#", "#.,,,,,,,,,,,,,,,,.#", "#.ff,,,,,,,,,,,,ff,#", "#bbbbbbbbbbbbbbbbbb#", "#ssssssssssssssssss#", "#~~~~~~bbb~~~~b~~~~#", "#~~~~~~b~b~~~~b~~~~#", "#~~~~~~bLb~~~~b~~~~#", "#~~~~~~bPb~~~~X~~~~#", "####################"],
     marks: [{
@@ -1403,7 +1404,7 @@ const CITY_PLANS = {
       w: 4,
       h: 2,
       kind: "zeppelin",
-      label: "Zeppelin-Museum"
+      label: "Luftschiff-Museum"
     }, {
       x: 8,
       y: 12,
@@ -1491,7 +1492,7 @@ const LANDMARK_FACTS = {
   "konstanz:konzil": "Im Konzilgebäude am Hafen soll 1417 der Papst gewählt worden sein – zur Zeit des Konstanzer Konzils (1414–1418).",
   "konstanz:imperia": "Die Imperia ist rund 9 Meter hoch und dreht sich langsam um die eigene Achse – seit 1993 grüßt sie im Hafen.",
   "ueberling:muenster": "Das Münster St. Nikolaus ist eine spätgotische Kirche – berühmt für ihren riesigen Holzaltar.",
-  "fhafen:zeppelin": "Das Zeppelin Museum erzählt die Geschichte der Luftschiffe, die in Friedrichshafen gebaut wurden.",
+  "fhafen:zeppelin": "Das Luftschiff-Museum erzählt die Geschichte der großen Luftschiffe, die einst in Friedrichshafen gebaut wurden.",
   "fhafen:moleturm": "Der Moleturm wacht über die Hafeneinfahrt von Friedrichshafen und zeigt Schiffen den Weg.",
   "lindau:leuchtturm": "Der Neue Leuchtturm von Lindau ist etwa 33 Meter hoch und steht seit 1856 an der Hafeneinfahrt.",
   "lindau:loewe": "Der Bayerische Löwe am Hafen ist rund 6 Meter hoch und wurde 1856 aufgestellt.",
@@ -1747,7 +1748,7 @@ function drawLandmark(ctx, kind, x, y, w, h, fr) {
     ctx.fillStyle = "#a8a29e";
     ctx.fillRect(x + W * .28, y + H * .66, W * .44, H * .06);
   } else if (kind === "zeppelin") {
-    // Zeppelin-Museum mit Luftschiff
+    // Luftschiff-Museum mit Luftschiff
     ctx.fillStyle = "#57534e";
     ctx.fillRect(x, y + H * .3, W, H * .7);
     ctx.fillStyle = "#d6d3d1";
@@ -7871,7 +7872,7 @@ function MenuScreen({
       display: "flex",
       gap: 6
     }
-  }, tabBtn("team", "TEAM"), tabBtn("items", "🎒"), tabBtn("dex", "📖 DEX"), tabBtn("baits", "🪝"), tabBtn("ach", "🏅"), tabBtn("atlas", "🗺️")), tab === "team" && /*#__PURE__*/React.createElement("div", {
+  }, tabBtn("team", "TEAM"), tabBtn("items", "🎒"), tabBtn("dex", "📖 SEEBUCH"), tabBtn("baits", "🪝"), tabBtn("ach", "🏅"), tabBtn("atlas", "🗺️")), tab === "team" && /*#__PURE__*/React.createElement("div", {
     style: {
       width: "100%",
       maxWidth: 360,
@@ -8242,7 +8243,7 @@ function MenuScreen({
       textAlign: "center",
       marginBottom: 3
     }
-  }, "AQUARIUMDEX — ", BASE_KEYS.filter(k => caught.includes(k)).length, "/", BASE_KEYS.length, " gefangen"), /*#__PURE__*/React.createElement("div", {
+  }, "SEEBUCH — ", BASE_KEYS.filter(k => caught.includes(k)).length, "/", BASE_KEYS.length, " gefangen"), /*#__PURE__*/React.createElement("div", {
     style: {
       color: "#475569",
       fontSize: "clamp(4px,.7vw,6px)",
@@ -8261,7 +8262,7 @@ function MenuScreen({
         marginBottom: 8,
         lineHeight: 1.8
       }
-    }, "🎁 Dex-Belohnungen: ", DEX_MILESTONES.map(m => (got.includes(m.n) ? "✓" : "○") + m.n).join("  "), /*#__PURE__*/React.createElement("br", null), nxt ? "Nächste bei " + nxt.n + " Arten (noch " + Math.max(0, nxt.n - cnt) + "): " + dexRewardText(nxt) : "Alle Belohnungen abgeholt!");
+    }, "🎁 Seebuch-Belohnungen: ", DEX_MILESTONES.map(m => (got.includes(m.n) ? "✓" : "○") + m.n).join("  "), /*#__PURE__*/React.createElement("br", null), nxt ? "Nächste bei " + nxt.n + " Arten (noch " + Math.max(0, nxt.n - cnt) + "): " + dexRewardText(nxt) : "Alle Belohnungen abgeholt!");
   })(), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -10023,7 +10024,7 @@ function CreditsScreen({
       fontSize: "clamp(4px,.8vw,7px)",
       lineHeight: 1.7
     }
-  }, "Vollende den Aquariumdex und gehe zum Steg in der Seemitte."), /*#__PURE__*/React.createElement("button", {
+  }, "Vollende das Seebuch und gehe zum Steg in der Seemitte."), /*#__PURE__*/React.createElement("button", {
     onClick: onRestart,
     style: {
       ...G("#041624", "#38bdf8"),
@@ -10533,7 +10534,7 @@ function AquariumMon() {
     });
     AUDIO.sfx("levelup");
     const last = due[due.length - 1];
-    setTimeout(() => showToast("📖 Dex-Belohnung! " + last.n + " Arten gefangen: " + dexRewardText(last) + (due.length > 1 ? " (+" + (due.length - 1) + " weitere)" : ""), 4600), 700);
+    setTimeout(() => showToast("📖 Seebuch-Belohnung! " + last.n + " Arten gefangen: " + dexRewardText(last) + (due.length > 1 ? " (+" + (due.length - 1) + " weitere)" : ""), 4600), 700);
   }, [player, scr]);
 
   // Bildschirmwechsel mit Übergang. Der Zielbildschirm wird erst gesetzt,
@@ -11352,7 +11353,7 @@ function AquariumMon() {
       fontFamily: "'Press Start 2P',monospace",
       background: "#020c18"
     }
-  }, /*#__PURE__*/React.createElement("style", null, `@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');*{box-sizing:border-box;margin:0;padding:0}button{cursor:pointer}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#0e4a7a}@keyframes monIdle{from{transform:translateY(0)}to{transform:translateY(-5px)}}`), scr === "title" && /*#__PURE__*/React.createElement(TitleScreen, {
+  }, /*#__PURE__*/React.createElement("style", null, `@font-face{font-family:'Press Start 2P';font-style:normal;font-weight:400;font-display:swap;src:url(vendor/fonts/press-start-2p-latin-400-normal.woff2) format('woff2')}*{box-sizing:border-box;margin:0;padding:0}button{cursor:pointer}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#0e4a7a}@keyframes monIdle{from{transform:translateY(0)}to{transform:translateY(-5px)}}`), scr === "title" && /*#__PURE__*/React.createElement(TitleScreen, {
     onNewGame: startNew,
     onLoad: loadGame,
     savedName: savedName
