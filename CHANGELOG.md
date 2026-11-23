@@ -10,6 +10,12 @@ Format jeder Überschrift: `## vN · JJJJ-MM-TT · Titel` (wird von `scripts/arc
 
 <!-- NEUE EINTRÄGE HIER OBEN EINFÜGEN -->
 
+## v18 · 2026-11-23 · Angelrekorde
+
+Jeder geangelte Fang bekommt jetzt eine Größe in Zentimetern. Wer fehlerfrei zieht (kein Fehlversuch), bekommt einen Größenbonus. Für jede Art wird der Rekord gespeichert: Das Fangergebnis zeigt ihn an und feiert jeden neuen Rekord, im 📖 Seebuch-Steckbrief steht der „Angelrekord“. Neuer Erfolg **„Rekordangler“** für Rekorde bei 6 verschiedenen Arten.
+
+**So findest du es:** In einer Stadt angeln gehen; danach Menü → 📖 SEEBUCH → Eintrag antippen.
+
 ## v17 · 2026-11-18 · Seebuch & ohne fremde Server
 
 Der Aquariumdex heißt jetzt **Seebuch** (📖 SEEBUCH im Menü, Erfolg „Seebuch-Meister“, Seebuch-Belohnungen). Das Zeppelin-Museum in Friedrichshafen heißt jetzt **Luftschiff-Museum**. Schrift, React und three.js liegen jetzt direkt im Spiel (`vendor/`): Beim Spielen werden keine Verbindungen mehr zu Google Fonts oder anderen fremden Servern aufgebaut. Bestehende Spielstände bleiben gültig.
