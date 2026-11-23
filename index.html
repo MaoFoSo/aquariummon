@@ -40,9 +40,10 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
    v15 · 2026-11-17 · NEU: Wahrzeichen-Wissen – wer ein Wahrzeichen entdeckt, erfährt dazu einen Wissenshappen (Meldung beim Entdecken); im 🗺️-Atlas steht der Steckbrief jedes entdeckten Wahrzeichens unter der jeweiligen Stadt.
    v16 · 2026-11-18 · NEU: Fangbuch – jeder Fang wird gezählt; im 📖 DEX-Steckbrief steht „Gefangen: N×“ je Art, im DEX-Kopf die Gesamtzahl der Fänge; neuer Erfolg „Serienfänger“ für 25 Fänge insgesamt.
    v17 · 2026-11-18 · Eigenständiger und datenschutzfreundlich: Schrift und Bibliotheken liegen jetzt im Spiel selbst (keine Verbindungen zu Google oder anderen CDNs mehr); der Aquariumdex heißt jetzt „Seebuch“ (📖-Tab), das Zeppelin-Museum heißt „Luftschiff-Museum“.
+   v18 · 2026-11-23 · NEU: Angelrekorde – jeder geangelte Fang bekommt eine Größe in cm (fehlerfreies Ziehen ohne Fehlversuch gibt einen Größenbonus); der Rekord je Art steht im Fangergebnis und im 📖 Seebuch-Steckbrief, ein neuer Rekord wird gefeiert; neuer Erfolg „Rekordangler“ für Rekorde bei 6 Arten.
 */
 try{
-const GAME_VERSION = "v17";
+const GAME_VERSION = "v18";
 const {
   useState,
   useEffect,
@@ -1128,7 +1129,8 @@ const ACHIEVEMENTS = [
   {id:"auftragsprofi",ico:"📜",name:"Auftragsprofi",desc:"Erledige 5 Tagesaufträge.",test:p=>(p.questCount||0)>=5},
   {id:"glueckspilz",ico:"✨",name:"Glückspilz",desc:"Fange ein schillerndes Aquariummon.",test:p=>(p.shinyCount||0)>=1},
   {id:"zeitreisender",ico:"⏰",name:"Zeitreisender",desc:"Fange alle 4 Tageszeit-Gäste (Haubi, Läufi, Zanderan, Welsio).",test:p=>Object.keys(TIME_GUESTS).reduce((a,ph)=>a.concat(TIME_GUESTS[ph]),[]).every(k=>(p.caught||[]).includes(k))},
-  {id:"serienfaenger",ico:"🎯",name:"Serienfänger",desc:"Fange insgesamt 25 Aquariummon (Fangbuch im 📖 Seebuch).",test:p=>(p.catchTotal||0)>=25}
+  {id:"serienfaenger",ico:"🎯",name:"Serienfänger",desc:"Fange insgesamt 25 Aquariummon (Fangbuch im 📖 Seebuch).",test:p=>(p.catchTotal||0)>=25},
+  {id:"rekordangler",ico:"📏",name:"Rekordangler",desc:"Stelle beim Angeln Größenrekorde für 6 verschiedene Arten auf.",test:p=>Object.keys(p.fishRecords||{}).length>=6}
 ];
 /* DEX-STECKBRIEFE (v9) */
 const DEX_INFO = {
@@ -1206,6 +1208,20 @@ function questCard(p) {
         done ? "Erledigt – morgen gibt Prof. Seestern einen neuen Auftrag!" : "Fange heute " + mon.name + ": 💰" + QUEST_REWARD.perlen + " + 🎯 Profi-Köder",
         E("br", null), "Fundorte: " + locs,
         E("br", null), "Erledigte Aufträge: " + (p.questCount || 0))));
+}
+/* ANGELREKORDE (v18): typische Länge je Art in cm; jeder Fang streut um diesen Wert */
+const FISH_LEN = {
+  karpfi: 60, hechtus: 85, barschi: 28, forellius: 45, welsio: 150, zanderan: 65,
+  schnecki: 4.5, velvetto: 12, muschelix: 9, wurmli: 15, moewix: 42, haubi: 48,
+  libella: 7, laeufi: 1.4, krebsor: 13, aalwyn: 75
+};
+function rollFishSize(k, perfect) {
+  const base = FISH_LEN[k] || 30;
+  const f = 0.7 + Math.random() * 0.45 + (perfect ? 0.15 : 0);
+  return Math.round(base * f * 10) / 10;
+}
+function fmtCm(v) {
+  return (v < 10 ? v.toFixed(1) : String(Math.round(v))).replace(".", ",") + " cm";
 }
 /* SCHILLERNDE AQUARIUMMON (v14): 1/16 Chance bei wilden Begegnungen */
 const SHINY_CHANCE = 1 / 16;
@@ -8380,7 +8396,7 @@ function MenuScreen({
         fontSize: "clamp(4px,.7vw,6px)",
         lineHeight: 1.9
       }
-    }, isCaught ? (DEX_INFO[k] || "") : isSeen ? "Gesichtet – fang es, um den Steckbrief freizuschalten." : "Noch nie gesichtet.", /*#__PURE__*/React.createElement("br", null), "Fundorte: ", isSeen ? dexLocations(k).join(" · ") || "unbekannt" : "???", (MONS[k].catch || 0) > 0 && isCaught ? ` · Fangrate ${MONS[k].catch}%` : "", isCaught && ((player.catchLog || {})[k] || 0) > 0 ? " · Gefangen: " + player.catchLog[k] + "×" : ""));
+    }, isCaught ? (DEX_INFO[k] || "") : isSeen ? "Gesichtet – fang es, um den Steckbrief freizuschalten." : "Noch nie gesichtet.", /*#__PURE__*/React.createElement("br", null), "Fundorte: ", isSeen ? dexLocations(k).join(" · ") || "unbekannt" : "???", (MONS[k].catch || 0) > 0 && isCaught ? ` · Fangrate ${MONS[k].catch}%` : "", isCaught && ((player.catchLog || {})[k] || 0) > 0 ? " · Gefangen: " + player.catchLog[k] + "×" : "", isCaught && (player.fishRecords || {})[k] ? " · 📏 Angelrekord: " + fmtCm(player.fishRecords[k]) : ""));
   })), (() => {
     const wCaught = caught.includes("walox");
     const ready = (player.team || []).some(m => (m.level || 1) >= MAXLV);
@@ -8579,6 +8595,7 @@ function MenuScreen({
 function FishingScreen({
   city,
   baitBonus = 0,
+  records = {},
   onCaught,
   onBack
 }) {
@@ -8587,6 +8604,7 @@ function FishingScreen({
   const [hits, setHits] = useState(0);
   const [misses, setMisses] = useState(0);
   const [caught, setCaught] = useState(null);
+  const [size, setSize] = useState(0);
   const [msg, setMsg] = useState("Wirf die Angel aus!");
   const [round, setRound] = useState(0); // bumped every time reeling (re)starts so the effect re-fires even if phase stays "reeling"
   const [zoneS] = useState(() => 18 + Math.random() * 30);
@@ -8645,6 +8663,7 @@ function FishingScreen({
         const fishPool = (wid === "regen" || wid === "nebel" ? city.wild.concat(weatherGuests()) : city.wild).concat(timeGuests());
         const key = fishPool[Math.floor(Math.random() * fishPool.length)];
         setCaught(key);
+        setSize(rollFishSize(key, misses === 0));
         setPhase("result");
         setMsg(`${MONS[key].name} gefangen!`);
       } else {
@@ -8786,8 +8805,19 @@ function FishingScreen({
       color: "#4ade80",
       fontSize: "clamp(8px,1.5vw,12px)"
     }
-  }, MONS[caught].name, " gefangen!"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => onCaught(caught),
+  }, MONS[caught].name, " gefangen!"), (() => {
+    const old = records[caught] || 0, isRec = size > old;
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: isRec ? "#fbbf24" : "#94a3b8",
+        fontSize: "clamp(5px,1vw,8px)",
+        lineHeight: 1.8
+      }
+    }, "📏 ", fmtCm(size), isRec ? (old ? " · 🏆 NEUER REKORD! (vorher " + fmtCm(old) + ")" : " · 🏆 Erster Rekord!") : " · Rekord: " + fmtCm(old), misses === 0 ? /*#__PURE__*/React.createElement("div", {
+      style: { color: "#4ade80", fontSize: "clamp(4px,.75vw,7px)" }
+    }, "Fehlerfrei gezogen: Größenbonus!") : null);
+  })(), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onCaught(caught, size),
     style: {
       ...G("#041a0c", "#4ade80"),
       marginTop: 6
@@ -10623,7 +10653,8 @@ function AquariumMon() {
       questCount: 0,
       shinyCount: 0,
       catchTotal: 0,
-      catchLog: {}
+      catchLog: {},
+      fishRecords: {}
     });
     showDlg(DLGS[0], () => go("starter"));
   }
@@ -10684,6 +10715,7 @@ function AquariumMon() {
       shinyCount: 0,
       catchTotal: 0,
       catchLog: {},
+      fishRecords: {},
       ...s
     };
     merged.items = {
@@ -11276,13 +11308,19 @@ function AquariumMon() {
     }
     if (curCity) go("city");else go("overworld");
   }
-  function onFishCaught(k) {
+  function onFishCaught(k, size) {
     AUDIO.sfx("catch");
     gainMon(tameMon(rollShiny(mkMon(k, 2))));
-    setPlayer(p => p ? {
-      ...p,
-      rods: Math.max(0, (p.rods || 0) - 1)
-    } : p);
+    setPlayer(p => {
+      if (!p) return p;
+      const recs = { ...(p.fishRecords || {}) };
+      if (size > 0 && size > (recs[k] || 0)) recs[k] = size;
+      return {
+        ...p,
+        rods: Math.max(0, (p.rods || 0) - 1),
+        fishRecords: recs
+      };
+    });
     go("city");
   }
   function onGameOver(finalTeam) {
@@ -11396,6 +11434,7 @@ function AquariumMon() {
   }), scr === "fishing" && curCity && player && /*#__PURE__*/React.createElement(FishingScreen, {
     city: curCity,
     baitBonus: baitBonus,
+    records: player.fishRecords || {},
     onCaught: onFishCaught,
     onBack: () => go("city")
   }), scr === "battle" && battle && player && /*#__PURE__*/React.createElement(BattleScreen, {
