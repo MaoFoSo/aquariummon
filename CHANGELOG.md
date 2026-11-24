@@ -10,6 +10,12 @@ Format jeder Überschrift: `## vN · JJJJ-MM-TT · Titel` (wird von `scripts/arc
 
 <!-- NEUE EINTRÄGE HIER OBEN EINFÜGEN -->
 
+## v19 · 2026-11-24 · Angebot des Tages
+
+Im Aquariummon-Center ist jeden Tag ein anderer Artikel 40 % günstiger, bis zu 3 Stück pro Tag zum Angebotspreis. Beim Tagesgeschenk verrät eine Meldung, was heute im Angebot ist. Neuer Erfolg **„Schnäppchenjäger“** für 10 gekaufte Angebote.
+
+**So findest du es:** In einer Stadt ins ✚ Aquariummon-Center gehen – das Angebot steht oben und ist mit 🏷️ markiert.
+
 ## v18 · 2026-11-23 · Angelrekorde
 
 Jeder geangelte Fang bekommt jetzt eine Größe in Zentimetern. Wer fehlerfrei zieht (kein Fehlversuch), bekommt einen Größenbonus. Für jede Art wird der Rekord gespeichert: Das Fangergebnis zeigt ihn an und feiert jeden neuen Rekord, im 📖 Seebuch-Steckbrief steht der „Angelrekord“. Neuer Erfolg **„Rekordangler“** für Rekorde bei 6 verschiedenen Arten.

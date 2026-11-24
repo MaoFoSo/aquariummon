@@ -41,9 +41,10 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
    v16 · 2026-11-18 · NEU: Fangbuch – jeder Fang wird gezählt; im 📖 DEX-Steckbrief steht „Gefangen: N×“ je Art, im DEX-Kopf die Gesamtzahl der Fänge; neuer Erfolg „Serienfänger“ für 25 Fänge insgesamt.
    v17 · 2026-11-18 · Eigenständiger und datenschutzfreundlich: Schrift und Bibliotheken liegen jetzt im Spiel selbst (keine Verbindungen zu Google oder anderen CDNs mehr); der Aquariumdex heißt jetzt „Seebuch“ (📖-Tab), das Zeppelin-Museum heißt „Luftschiff-Museum“.
    v18 · 2026-11-23 · NEU: Angelrekorde – jeder geangelte Fang bekommt eine Größe in cm (fehlerfreies Ziehen ohne Fehlversuch gibt einen Größenbonus); der Rekord je Art steht im Fangergebnis und im 📖 Seebuch-Steckbrief, ein neuer Rekord wird gefeiert; neuer Erfolg „Rekordangler“ für Rekorde bei 6 Arten.
+   v19 · 2026-11-24 · NEU: Angebot des Tages – im Aquariummon-Center ist jeden Tag ein anderer Artikel 40 % günstiger (bis zu 3 Stück pro Tag zum Angebotspreis); Hinweis beim Tagesgeschenk; neuer Erfolg „Schnäppchenjäger“ für 10 gekaufte Angebote.
 */
 try{
-const GAME_VERSION = "v18";
+const GAME_VERSION = "v19";
 const {
   useState,
   useEffect,
@@ -1006,6 +1007,19 @@ const ITEMS = {
   }
 };
 const SHOP_KEYS = ["heiltrank", "supertrank", "beleber", "koederdose", "profikoeder"];
+/* ANGEBOT DES TAGES (v19): ein Shop-Artikel pro Tag 40 % günstiger, max. 3 Stück */
+const DEAL_OFF = 0.4, DEAL_MAX = 3;
+function dealKey(dateStr) {
+  let h = 11;
+  const str = "deal:" + String(dateStr || "");
+  for (let i = 0; i < str.length; i++) h = (h * 33 + str.charCodeAt(i)) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 2654435761) >>> 0;
+  return SHOP_KEYS[h % SHOP_KEYS.length];
+}
+const dealPrice = k => Math.max(5, Math.round(ITEMS[k].price * (1 - DEAL_OFF) / 5) * 5);
+function dealLeft(p, dateStr) {
+  return p && p.dealDay === dateStr ? Math.max(0, DEAL_MAX - (p.dealBought || 0)) : DEAL_MAX;
+}
 // Eingangskachel-Wert → Stadt-ID
 const ENTRANCE = {
   5: "konstanz",
@@ -1130,6 +1144,7 @@ const ACHIEVEMENTS = [
   {id:"glueckspilz",ico:"✨",name:"Glückspilz",desc:"Fange ein schillerndes Aquariummon.",test:p=>(p.shinyCount||0)>=1},
   {id:"zeitreisender",ico:"⏰",name:"Zeitreisender",desc:"Fange alle 4 Tageszeit-Gäste (Haubi, Läufi, Zanderan, Welsio).",test:p=>Object.keys(TIME_GUESTS).reduce((a,ph)=>a.concat(TIME_GUESTS[ph]),[]).every(k=>(p.caught||[]).includes(k))},
   {id:"serienfaenger",ico:"🎯",name:"Serienfänger",desc:"Fange insgesamt 25 Aquariummon (Fangbuch im 📖 Seebuch).",test:p=>(p.catchTotal||0)>=25},
+  {id:"schnaeppchen",ico:"🏷️",name:"Schnäppchenjäger",desc:"Kaufe 10 Angebote des Tages im Aquariummon-Center.",test:p=>(p.dealCount||0)>=10},
   {id:"rekordangler",ico:"📏",name:"Rekordangler",desc:"Stelle beim Angeln Größenrekorde für 6 verschiedene Arten auf.",test:p=>Object.keys(p.fishRecords||{}).length>=6}
 ];
 /* DEX-STECKBRIEFE (v9) */
@@ -7750,7 +7765,23 @@ function ShopScreen({
       fontSize: "clamp(6px,1.2vw,10px)",
       marginTop: 4
     }
-  }, "💰 ", player.perlen || 0, " Perlen"), /*#__PURE__*/React.createElement("div", {
+  }, "💰 ", player.perlen || 0, " Perlen"), (() => {
+    const dk = dealKey(todayStr()), left = dealLeft(player, todayStr());
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: "100%",
+        maxWidth: 360,
+        padding: 7,
+        background: "#1f1405",
+        border: "1px solid #f59e0b88",
+        borderRadius: 5,
+        color: "#fbbf24",
+        fontSize: "clamp(4px,.8vw,7px)",
+        lineHeight: 1.8,
+        textAlign: "center"
+      }
+    }, "🏷️ Angebot des Tages: ", ITEMS[dk].ico, " ", ITEMS[dk].name, " für ", dealPrice(dk), " statt ", ITEMS[dk].price, " 💰", /*#__PURE__*/React.createElement("br", null), left > 0 ? "Noch " + left + " von " + DEAL_MAX + " Stück zum Angebotspreis" : "Heute ausverkauft – morgen gibt es ein neues Angebot!");
+  })(), /*#__PURE__*/React.createElement("div", {
     style: {
       width: "100%",
       maxWidth: 360,
@@ -7760,7 +7791,9 @@ function ShopScreen({
     }
   }, SHOP_KEYS.map(k => {
     const it = ITEMS[k];
-    const can = (player.perlen || 0) >= it.price;
+    const deal = k === dealKey(todayStr()) && dealLeft(player, todayStr()) > 0;
+    const price = deal ? dealPrice(k) : it.price;
+    const can = (player.perlen || 0) >= price;
     const have = (player.items || {})[k] || 0;
     return /*#__PURE__*/React.createElement("div", {
       key: k,
@@ -7769,8 +7802,8 @@ function ShopScreen({
         alignItems: "center",
         gap: 10,
         padding: 9,
-        background: "#0a1420",
-        border: "1px solid #1e3a5a",
+        background: deal ? "#1a1306" : "#0a1420",
+        border: "1px solid " + (deal ? "#f59e0b" : "#1e3a5a"),
         borderRadius: 5
       }
     }, /*#__PURE__*/React.createElement("span", {
@@ -7805,7 +7838,7 @@ function ShopScreen({
         padding: "6px 8px",
         opacity: can ? 1 : .5
       }
-    }, it.price, " 💰"));
+    }, deal ? "🏷️ " : "", price, " 💰"));
   })), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
       AUDIO.sfx("back");
@@ -10540,6 +10573,7 @@ function AquariumMon() {
     const extra = r.item ? `  +${ITEMS[r.item].ico} ${ITEMS[r.item].name}` : "";
     setTimeout(() => showToast(`🎁 Tagesgeschenk! Tag ${streak} in Folge: 💰+${r.perlen}${extra}`, 4200), 0);
     setTimeout(() => showToast("📜 Neuer Tagesauftrag: Fange " + MONS[questTarget(today)].name + "! (Menü → 🎒)", 4200), 4500);
+    setTimeout(() => { const dk = dealKey(today); showToast("🏷️ Angebot des Tages im Aquariummon-Center: " + ITEMS[dk].ico + " " + ITEMS[dk].name + " für " + dealPrice(dk) + " 💰", 4200); }, 9000);
   }, [player, scr]);
 
   // Dex-Belohnungen (v12): Meilensteine automatisch auszahlen
@@ -10654,7 +10688,10 @@ function AquariumMon() {
       shinyCount: 0,
       catchTotal: 0,
       catchLog: {},
-      fishRecords: {}
+      fishRecords: {},
+      dealDay: "",
+      dealBought: 0,
+      dealCount: 0
     });
     showDlg(DLGS[0], () => go("starter"));
   }
@@ -10716,6 +10753,9 @@ function AquariumMon() {
       catchTotal: 0,
       catchLog: {},
       fishRecords: {},
+      dealDay: "",
+      dealBought: 0,
+      dealCount: 0,
       ...s
     };
     merged.items = {
@@ -11131,19 +11171,28 @@ function AquariumMon() {
   function buyItem(key) {
     const it = ITEMS[key];
     if (!it || it.key) return;
-    if ((player?.perlen || 0) < it.price) {
+    const t = todayStr();
+    const deal = key === dealKey(t) && dealLeft(player, t) > 0;
+    const price = deal ? dealPrice(key) : it.price;
+    if ((player?.perlen || 0) < price) {
       AUDIO.sfx("deny");
       showToast("💰 Nicht genug Perlen.");
       return;
     }
     AUDIO.sfx("catch");
+    if (deal) showToast("🏷️ Schnäppchen! " + (it.price - price) + " Perlen gespart.");
     setPlayer(p => p ? {
       ...p,
-      perlen: p.perlen - it.price,
+      perlen: p.perlen - price,
       items: {
         ...(p.items || {}),
         [key]: ((p.items || {})[key] || 0) + 1
-      }
+      },
+      ...(deal ? {
+        dealDay: t,
+        dealBought: (p.dealDay === t ? p.dealBought || 0 : 0) + 1,
+        dealCount: (p.dealCount || 0) + 1
+      } : {})
     } : p);
   }
   function owWild(monKey) {
