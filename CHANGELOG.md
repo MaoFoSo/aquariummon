@@ -10,6 +10,12 @@ Format jeder Überschrift: `## vN · JJJJ-MM-TT · Titel` (wird von `scripts/arc
 
 <!-- NEUE EINTRÄGE HIER OBEN EINFÜGEN -->
 
+## v20 · 2026-11-25 · Seebuch-Filter
+
+Das 📖 Seebuch hat jetzt Filter: **Alle**, **Gefangen**, **Fehlt** und **⏳ Jetzt unterwegs** (mit Anzahl). „Jetzt unterwegs“ zeigt die Wetter- und Tageszeit-Gäste, die gerade auftauchen – sie tragen auch in der normalen Liste das Abzeichen „⏳ jetzt unterwegs“. So sieht man sofort, welche fehlenden Arten man gerade fangen kann.
+
+**So findest du es:** Menü → 📖 SEEBUCH → Filterknöpfe über der Liste.
+
 ## v19 · 2026-11-24 · Angebot des Tages
 
 Im Aquariummon-Center ist jeden Tag ein anderer Artikel 40 % günstiger, bis zu 3 Stück pro Tag zum Angebotspreis. Beim Tagesgeschenk verrät eine Meldung, was heute im Angebot ist. Neuer Erfolg **„Schnäppchenjäger“** für 10 gekaufte Angebote.

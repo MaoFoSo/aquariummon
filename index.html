@@ -42,9 +42,10 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
    v17 · 2026-11-18 · Eigenständiger und datenschutzfreundlich: Schrift und Bibliotheken liegen jetzt im Spiel selbst (keine Verbindungen zu Google oder anderen CDNs mehr); der Aquariumdex heißt jetzt „Seebuch“ (📖-Tab), das Zeppelin-Museum heißt „Luftschiff-Museum“.
    v18 · 2026-11-23 · NEU: Angelrekorde – jeder geangelte Fang bekommt eine Größe in cm (fehlerfreies Ziehen ohne Fehlversuch gibt einen Größenbonus); der Rekord je Art steht im Fangergebnis und im 📖 Seebuch-Steckbrief, ein neuer Rekord wird gefeiert; neuer Erfolg „Rekordangler“ für Rekorde bei 6 Arten.
    v19 · 2026-11-24 · NEU: Angebot des Tages – im Aquariummon-Center ist jeden Tag ein anderer Artikel 40 % günstiger (bis zu 3 Stück pro Tag zum Angebotspreis); Hinweis beim Tagesgeschenk; neuer Erfolg „Schnäppchenjäger“ für 10 gekaufte Angebote.
+   v20 · 2026-11-25 · NEU: Seebuch-Filter – im 📖 Seebuch lässt sich die Liste nach Alle / Gefangen / Fehlt / Jetzt unterwegs filtern; Wetter- und Tageszeit-Gäste, die gerade auftauchen, tragen das Abzeichen „⏳ jetzt unterwegs“.
 */
 try{
-const GAME_VERSION = "v19";
+const GAME_VERSION = "v20";
 const {
   useState,
   useEffect,
@@ -2613,6 +2614,10 @@ const TIME_GUESTS = {
 const TIME_ICO = { "Morgenrot": "🌅", "Tag": "☀️", "Abendrot": "🌇", "Dämmerung": "🌆", "Nacht": "🌙" };
 function timeGuests() {
   try { return TIME_GUESTS[dayPhase().name] || []; } catch (e) { return []; }
+}
+/* Seebuch-Filter (v20): Arten, die gerade als Wetter- oder Tageszeit-Gast auftauchen */
+function dexNowKeys() {
+  return weatherGuests().concat(timeGuests());
 }
 function drawWeather(ctx, W, H, fr, hudY) {
   const w = weatherNow();
@@ -7881,6 +7886,7 @@ function MenuScreen({
   const [tab, setTab] = useState("team");
   const [relIdx, setRelIdx] = useState(null);
   const [dexOpen, setDexOpen] = useState(null);
+  const [dexFilter, setDexFilter] = useState("alle");
   async function doSave() {
     await onSave();
     setSaved(true);
@@ -8312,13 +8318,50 @@ function MenuScreen({
         lineHeight: 1.8
       }
     }, "🎁 Seebuch-Belohnungen: ", DEX_MILESTONES.map(m => (got.includes(m.n) ? "✓" : "○") + m.n).join("  "), /*#__PURE__*/React.createElement("br", null), nxt ? "Nächste bei " + nxt.n + " Arten (noch " + Math.max(0, nxt.n - cnt) + "): " + dexRewardText(nxt) : "Alle Belohnungen abgeholt!");
+  })(), (() => {
+    /* SEEBUCH-FILTER (v20) */
+    const now = dexNowKeys();
+    const opts = [["alle", "Alle", BASE_KEYS.length], ["gefangen", "Gefangen", BASE_KEYS.filter(k => caught.includes(k)).length], ["fehlt", "Fehlt", BASE_KEYS.filter(k => !caught.includes(k)).length], ["jetzt", "⏳ Jetzt unterwegs", BASE_KEYS.filter(k => now.includes(k)).length]];
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        flexWrap: "wrap",
+        justifyContent: "center",
+        gap: 5,
+        marginBottom: 8
+      }
+    }, opts.map(([id, lbl, n]) => /*#__PURE__*/React.createElement("button", {
+      key: id,
+      onClick: () => {
+        AUDIO.sfx("click");
+        setDexFilter(id);
+        setDexOpen(null);
+      },
+      style: {
+        ...G(dexFilter === id ? "#062040" : "#020c18", dexFilter === id ? "#38bdf8" : "#334155"),
+        fontSize: "clamp(4px,.7vw,6px)",
+        padding: "5px 7px"
+      }
+    }, lbl, " (", n, ")")));
+  })(), (() => {
+    const now = dexNowKeys();
+    const list = BASE_KEYS.filter(k => dexFilter === "gefangen" ? caught.includes(k) : dexFilter === "fehlt" ? !caught.includes(k) : dexFilter === "jetzt" ? now.includes(k) : true);
+    return list.length ? null : /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: "#64748b",
+        fontSize: "clamp(4px,.7vw,6px)",
+        textAlign: "center",
+        padding: 10,
+        lineHeight: 1.8
+      }
+    }, dexFilter === "fehlt" ? "Alle Arten gefangen – stark!" : dexFilter === "gefangen" ? "Noch nichts gefangen." : "Gerade sind keine Wetter- oder Tageszeit-Gäste unterwegs.");
   })(), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
       gap: 7
     }
-  }, BASE_KEYS.map(k => {
+  }, BASE_KEYS.filter(k => dexFilter === "gefangen" ? caught.includes(k) : dexFilter === "fehlt" ? !caught.includes(k) : dexFilter === "jetzt" ? dexNowKeys().includes(k) : true).map(k => {
     const mon = MONS[k];
     const isCaught = caught.includes(k);
     const isSeen = seen.includes(k) || isCaught;
@@ -8378,7 +8421,12 @@ function MenuScreen({
         textAlign: "center",
         lineHeight: 1.4
       }
-    }, isCaught ? `HP${mon.maxHp} A${mon.atk} D${mon.def}` : isSeen ? "gesichtet" : "unbekannt")), /*#__PURE__*/React.createElement("div", {
+    }, isCaught ? `HP${mon.maxHp} A${mon.atk} D${mon.def}` : isSeen ? "gesichtet" : "unbekannt"), dexNowKeys().includes(k) && /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: "#fbbf24",
+        fontSize: "clamp(3.5px,.6vw,5.5px)"
+      }
+    }, "⏳ jetzt unterwegs")), /*#__PURE__*/React.createElement("div", {
       style: {
         color: eCaught ? "#c084fc" : "#1e293b",
         fontSize: "clamp(7px,1.3vw,11px)"
