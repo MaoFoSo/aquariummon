@@ -10,6 +10,12 @@ Format jeder Überschrift: `## vN · JJJJ-MM-TT · Titel` (wird von `scripts/arc
 
 <!-- NEUE EINTRÄGE HIER OBEN EINFÜGEN -->
 
+## v21 · 2026-11-26 · Erfolgs-Belohnungen
+
+Erfolge lohnen sich jetzt: Für jeden freigeschalteten Erfolg gibt es im 🏅-Tab **50 Perlen** zum Abholen – einzeln per Knopf oder gesammelt mit „Alle abholen“. Ein 🔴 am 🏅-Knopf zeigt, dass noch Belohnungen warten. Auch Erfolge aus älteren Spielständen können nachträglich abgeholt werden.
+
+**So findest du es:** Menü → 🏅 Erfolge.
+
 ## v20 · 2026-11-25 · Seebuch-Filter
 
 Das 📖 Seebuch hat jetzt Filter: **Alle**, **Gefangen**, **Fehlt** und **⏳ Jetzt unterwegs** (mit Anzahl). „Jetzt unterwegs“ zeigt die Wetter- und Tageszeit-Gäste, die gerade auftauchen – sie tragen auch in der normalen Liste das Abzeichen „⏳ jetzt unterwegs“. So sieht man sofort, welche fehlenden Arten man gerade fangen kann.
