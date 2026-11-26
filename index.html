@@ -43,9 +43,10 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
    v18 · 2026-11-23 · NEU: Angelrekorde – jeder geangelte Fang bekommt eine Größe in cm (fehlerfreies Ziehen ohne Fehlversuch gibt einen Größenbonus); der Rekord je Art steht im Fangergebnis und im 📖 Seebuch-Steckbrief, ein neuer Rekord wird gefeiert; neuer Erfolg „Rekordangler“ für Rekorde bei 6 Arten.
    v19 · 2026-11-24 · NEU: Angebot des Tages – im Aquariummon-Center ist jeden Tag ein anderer Artikel 40 % günstiger (bis zu 3 Stück pro Tag zum Angebotspreis); Hinweis beim Tagesgeschenk; neuer Erfolg „Schnäppchenjäger“ für 10 gekaufte Angebote.
    v20 · 2026-11-25 · NEU: Seebuch-Filter – im 📖 Seebuch lässt sich die Liste nach Alle / Gefangen / Fehlt / Jetzt unterwegs filtern; Wetter- und Tageszeit-Gäste, die gerade auftauchen, tragen das Abzeichen „⏳ jetzt unterwegs“.
+   v21 · 2026-11-26 · NEU: Erfolgs-Belohnungen – für jeden freigeschalteten Erfolg gibt es im 🏅-Tab 50 Perlen zum Abholen (einzeln oder „Alle abholen“); ein rotes Zeichen am 🏅-Knopf zeigt offene Belohnungen.
 */
 try{
-const GAME_VERSION = "v20";
+const GAME_VERSION = "v21";
 const {
   useState,
   useEffect,
@@ -1246,6 +1247,9 @@ function rollShiny(mon) {
   if (mon && Math.random() < SHINY_CHANCE) mon.shiny = true;
   return mon;
 }
+/* ERFOLGS-BELOHNUNGEN (v21): je freigeschaltetem Erfolg einmalig Perlen abholen */
+const ACH_REWARD = 50;
+const achOpen = p => achUnlocked(p).filter(id => !((p && p.achClaimed) || []).includes(id));
 const achUnlocked = p => ACHIEVEMENTS.filter(a => { try { return !!a.test(p); } catch (e) { return false; } }).map(a => a.id);
 
 /* ═══════════════════════════════════════════════════ SAVE / LOAD ═══ */
@@ -7878,7 +7882,8 @@ function MenuScreen({
   onEvolve,
   onReorder,
   onAudio,
-  onUseItem
+  onUseItem,
+  onClaimAch
 }) {
   const [musicOn, setMusicOn] = useState(AUDIO.musicOn);
   const [sfxOn, setSfxOn] = useState(AUDIO.sfxOn);
@@ -7927,7 +7932,7 @@ function MenuScreen({
       display: "flex",
       gap: 6
     }
-  }, tabBtn("team", "TEAM"), tabBtn("items", "🎒"), tabBtn("dex", "📖 SEEBUCH"), tabBtn("baits", "🪝"), tabBtn("ach", "🏅"), tabBtn("atlas", "🗺️")), tab === "team" && /*#__PURE__*/React.createElement("div", {
+  }, tabBtn("team", "TEAM"), tabBtn("items", "🎒"), tabBtn("dex", "📖 SEEBUCH"), tabBtn("baits", "🪝"), tabBtn("ach", achOpen(player).length ? "🏅🔴" : "🏅"), tabBtn("atlas", "🗺️")), tab === "team" && /*#__PURE__*/React.createElement("div", {
     style: {
       width: "100%",
       maxWidth: 360,
@@ -8584,8 +8589,13 @@ function MenuScreen({
     }, "✓"));
   })), tab === "ach" && (() => {
     const got = achUnlocked(player);
+    const open = achOpen(player);
+    const claimed = player.achClaimed || [];
     return React.createElement("div", { style: { width: "100%", maxWidth: 360 } },
-      React.createElement("div", { style: { color: "#fbbf24", fontSize: "clamp(5px,.9vw,8px)", textAlign: "center", marginBottom: 8 } }, "ERFOLGE — ", got.length, "/", ACHIEVEMENTS.length),
+      React.createElement("div", { style: { color: "#fbbf24", fontSize: "clamp(5px,.9vw,8px)", textAlign: "center", marginBottom: 4 } }, "ERFOLGE — ", got.length, "/", ACHIEVEMENTS.length),
+      React.createElement("div", { style: { color: "#94a3b8", fontSize: "clamp(3.5px,.6vw,6px)", textAlign: "center", marginBottom: 8, lineHeight: 1.8 } }, "💰 Jeder Erfolg bringt ", ACH_REWARD, " Perlen.", open.length ? " Offen: " + open.length + " (" + open.length * ACH_REWARD + " Perlen)" : " Alle Belohnungen abgeholt."),
+      open.length > 1 && onClaimAch && React.createElement("div", { style: { textAlign: "center", marginBottom: 8 } },
+        React.createElement("button", { onClick: () => onClaimAch(open), style: { ...G("#1f1405", "#fbbf24"), fontSize: "clamp(4px,.8vw,7px)", padding: "6px 10px" } }, "💰 Alle abholen (+", open.length * ACH_REWARD, ")")),
       ACHIEVEMENTS.map(a => {
         const on = got.includes(a.id);
         return React.createElement("div", { key: a.id, style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 7, padding: 8, background: on ? "#141004" : "#0a0e16", border: `1px solid ${on ? "#fbbf2455" : "#1e293b"}`, borderRadius: 5, opacity: on ? 1 : .55 } },
@@ -8593,7 +8603,7 @@ function MenuScreen({
           React.createElement("div", { style: { flex: 1 } },
             React.createElement("div", { style: { color: on ? "#fbbf24" : "#475569", fontSize: "clamp(5px,.9vw,8px)" } }, a.name),
             React.createElement("div", { style: { color: "#475569", fontSize: "clamp(3.5px,.6vw,6px)", marginTop: 2 } }, a.desc)),
-          on && React.createElement("span", { style: { color: "#4ade80", fontSize: "clamp(6px,1vw,10px)" } }, "✓"));
+          on && !claimed.includes(a.id) && onClaimAch ? React.createElement("button", { onClick: () => onClaimAch([a.id]), style: { ...G("#1f1405", "#fbbf24"), fontSize: "clamp(4px,.75vw,7px)", padding: "5px 7px" } }, "+", ACH_REWARD, " 💰") : on && React.createElement("span", { style: { color: "#4ade80", fontSize: "clamp(6px,1vw,10px)" } }, "✓"));
       }),
       React.createElement("div", { style: { color: "#1e3a5a", fontSize: "clamp(3.5px,.6vw,6px)", textAlign: "center", marginTop: 8 } }, "AquariumMon ", GAME_VERSION));
   })(), tab === "atlas" && (() => {
@@ -10739,7 +10749,8 @@ function AquariumMon() {
       fishRecords: {},
       dealDay: "",
       dealBought: 0,
-      dealCount: 0
+      dealCount: 0,
+      achClaimed: []
     });
     showDlg(DLGS[0], () => go("starter"));
   }
@@ -10804,6 +10815,7 @@ function AquariumMon() {
       dealDay: "",
       dealBought: 0,
       dealCount: 0,
+      achClaimed: [],
       ...s
     };
     merged.items = {
@@ -11216,6 +11228,18 @@ function AquariumMon() {
     });
     AUDIO.sfx("heal");
   }
+  function claimAch(ids) {
+    const open = achOpen(player).filter(id => ids.includes(id));
+    if (!open.length) return;
+    AUDIO.sfx("levelup");
+    showToast("🏅 Erfolgs-Belohnung: 💰+" + open.length * ACH_REWARD + " Perlen");
+    setPlayer(p => {
+      if (!p) return p;
+      const have = p.achClaimed || [];
+      const add = open.filter(id => !have.includes(id));
+      return { ...p, achClaimed: [...have, ...add], perlen: (p.perlen || 0) + add.length * ACH_REWARD };
+    });
+  }
   function buyItem(key) {
     const it = ITEMS[key];
     if (!it || it.key) return;
@@ -11575,7 +11599,8 @@ function AquariumMon() {
       musicOn: mu,
       sfxOn: sx
     } : p),
-    onUseItem: useItemOn
+    onUseItem: useItemOn,
+    onClaimAch: claimAch
   }), showShop && player && /*#__PURE__*/React.createElement(ShopScreen, {
     player: player,
     onBuy: buyItem,
