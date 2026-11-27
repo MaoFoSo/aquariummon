@@ -10,6 +10,12 @@ Format jeder Überschrift: `## vN · JJJJ-MM-TT · Titel` (wird von `scripts/arc
 
 <!-- NEUE EINTRÄGE HIER OBEN EINFÜGEN -->
 
+## v22 · 2026-11-27 · Lautstärke
+
+Neben 🎵 und 🔊 gibt es im Menü jetzt einen Lautstärke-Knopf: Er schaltet die Gesamtlautstärke von Musik und Effekten in vier Stufen (25 / 50 / 75 / 100 %). Die Einstellung wird mit dem Spielstand gespeichert; 100 % entspricht dem bisherigen Pegel.
+
+**So findest du es:** Menü → unten der Knopf 🔉 mit Prozentangabe.
+
 ## v21 · 2026-11-26 · Erfolgs-Belohnungen
 
 Erfolge lohnen sich jetzt: Für jeden freigeschalteten Erfolg gibt es im 🏅-Tab **50 Perlen** zum Abholen – einzeln per Knopf oder gesammelt mit „Alle abholen“. Ein 🔴 am 🏅-Knopf zeigt, dass noch Belohnungen warten. Auch Erfolge aus älteren Spielständen können nachträglich abgeholt werden.
