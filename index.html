@@ -44,9 +44,10 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
    v19 · 2026-11-24 · NEU: Angebot des Tages – im Aquariummon-Center ist jeden Tag ein anderer Artikel 40 % günstiger (bis zu 3 Stück pro Tag zum Angebotspreis); Hinweis beim Tagesgeschenk; neuer Erfolg „Schnäppchenjäger“ für 10 gekaufte Angebote.
    v20 · 2026-11-25 · NEU: Seebuch-Filter – im 📖 Seebuch lässt sich die Liste nach Alle / Gefangen / Fehlt / Jetzt unterwegs filtern; Wetter- und Tageszeit-Gäste, die gerade auftauchen, tragen das Abzeichen „⏳ jetzt unterwegs“.
    v21 · 2026-11-26 · NEU: Erfolgs-Belohnungen – für jeden freigeschalteten Erfolg gibt es im 🏅-Tab 50 Perlen zum Abholen (einzeln oder „Alle abholen“); ein rotes Zeichen am 🏅-Knopf zeigt offene Belohnungen.
+   v22 · 2026-11-27 · NEU: Lautstärke – im Menü schaltet ein 🔉-Knopf die Gesamtlautstärke in vier Stufen (25 / 50 / 75 / 100 %); die Einstellung wird im Spielstand gespeichert.
 */
 try{
-const GAME_VERSION = "v21";
+const GAME_VERSION = "v22";
 const {
   useState,
   useEffect,
@@ -64,6 +65,7 @@ const AUDIO = {
   lastError: null,
   musicOn: true,
   sfxOn: true,
+  volume: 1, // v22: Gesamtlautstärke (0.25 … 1), 1 = bisheriger Pegel
   _timer: null,
   _track: null,
   _step: 0,
@@ -75,7 +77,7 @@ const AUDIO = {
       if (!AC) return;
       this.ctx = new AC();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.5;
+      this.master.gain.value = 0.5 * this.volume;
       this.master.connect(this.ctx.destination);
       this.musicGain = this.ctx.createGain();
       this.musicGain.gain.value = this.musicOn ? 0.22 : 0;
@@ -128,6 +130,12 @@ const AUDIO = {
   setSfx(on) {
     this.sfxOn = on;
     if (this.sfxGain) this.sfxGain.gain.value = on ? 0.5 : 0;
+  },
+  setVolume(v) {
+    v = Number(v);
+    if (!(v > 0)) v = 1;
+    this.volume = Math.min(1, Math.max(0.25, v));
+    if (this.master) this.master.gain.value = 0.5 * this.volume;
   },
   // Einzelner Ton
   tone(freq, dur, type = "square", when = 0, vol = 1, dest = null) {
@@ -7883,9 +7891,11 @@ function MenuScreen({
   onReorder,
   onAudio,
   onUseItem,
-  onClaimAch
+  onClaimAch,
+  onVolume
 }) {
   const [musicOn, setMusicOn] = useState(AUDIO.musicOn);
+  const [vol, setVol] = useState(AUDIO.volume);
   const [sfxOn, setSfxOn] = useState(AUDIO.sfxOn);
   const [saved, setSaved] = useState(false);
   const [tab, setTab] = useState("team");
@@ -8662,6 +8672,22 @@ function MenuScreen({
       padding: "7px 8px"
     }
   }, sfxOn ? "🔊 AN" : "🔇 AUS"), /*#__PURE__*/React.createElement("button", {
+    title: "Lautstärke",
+    onClick: () => {
+      const steps = [0.25, 0.5, 0.75, 1];
+      const i = steps.findIndex(x => Math.abs(x - vol) < 0.01);
+      const n = steps[(i + 1) % steps.length];
+      setVol(n);
+      AUDIO.setVolume(n);
+      AUDIO.sfx("click");
+      onVolume && onVolume(n);
+    },
+    style: {
+      ...G("#041a2a", "#7dd3fc"),
+      fontSize: "clamp(4px,.85vw,7px)",
+      padding: "7px 8px"
+    }
+  }, (vol <= 0.25 ? "🔈 " : vol < 1 ? "🔉 " : "🔊 ") + Math.round(vol * 100) + "%"), /*#__PURE__*/React.createElement("button", {
     onClick: doSave,
     style: {
       ...G("#041a0c", "#4ade80"),
@@ -10824,6 +10850,7 @@ function AquariumMon() {
     if ((merged.baits || []).includes("insekt")) merged.items.tauchmaske = 1; // Tauchmaske für bestehende Stände
     AUDIO.setMusic(merged.musicOn !== false);
     AUDIO.setSfx(merged.sfxOn !== false);
+    AUDIO.setVolume(merged.volume || 1);
     merged.team = (merged.team || []).map(fix);
     merged.box = (merged.box || []).map(fix);
     setPlayer(merged);
@@ -11600,7 +11627,8 @@ function AquariumMon() {
       sfxOn: sx
     } : p),
     onUseItem: useItemOn,
-    onClaimAch: claimAch
+    onClaimAch: claimAch,
+    onVolume: v => setPlayer(p => p ? { ...p, volume: v } : p)
   }), showShop && player && /*#__PURE__*/React.createElement(ShopScreen, {
     player: player,
     onBuy: buyItem,
