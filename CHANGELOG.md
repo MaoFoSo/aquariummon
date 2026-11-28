@@ -10,6 +10,12 @@ Format jeder Überschrift: `## vN · JJJJ-MM-TT · Titel` (wird von `scripts/arc
 
 <!-- NEUE EINTRÄGE HIER OBEN EINFÜGEN -->
 
+## v23 · 2026-11-28 · Wochenend-Glück
+
+Samstags und sonntags sind schillernde Aquariummon doppelt so häufig (1/8 statt 1/16) – in der Oberwelt, beim Angeln und unter Wasser. Am Wochenende weist eine Meldung beim Tagesgeschenk darauf hin, außerdem stehen Hinweise im 🗺️-Atlas (unter der Woche: wann es wieder so weit ist) und im 📖 Seebuch. Neuer Erfolg **„Sonntagskind“** für einen schillernden Fang am Wochenende.
+
+**So findest du es:** Am Wochenende einfach fangen gehen; Hinweis im Menü → 🗺️ Atlas.
+
 ## v22 · 2026-11-27 · Lautstärke
 
 Neben 🎵 und 🔊 gibt es im Menü jetzt einen Lautstärke-Knopf: Er schaltet die Gesamtlautstärke von Musik und Effekten in vier Stufen (25 / 50 / 75 / 100 %). Die Einstellung wird mit dem Spielstand gespeichert; 100 % entspricht dem bisherigen Pegel.

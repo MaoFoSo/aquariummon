@@ -45,9 +45,10 @@ button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
    v20 · 2026-11-25 · NEU: Seebuch-Filter – im 📖 Seebuch lässt sich die Liste nach Alle / Gefangen / Fehlt / Jetzt unterwegs filtern; Wetter- und Tageszeit-Gäste, die gerade auftauchen, tragen das Abzeichen „⏳ jetzt unterwegs“.
    v21 · 2026-11-26 · NEU: Erfolgs-Belohnungen – für jeden freigeschalteten Erfolg gibt es im 🏅-Tab 50 Perlen zum Abholen (einzeln oder „Alle abholen“); ein rotes Zeichen am 🏅-Knopf zeigt offene Belohnungen.
    v22 · 2026-11-27 · NEU: Lautstärke – im Menü schaltet ein 🔉-Knopf die Gesamtlautstärke in vier Stufen (25 / 50 / 75 / 100 %); die Einstellung wird im Spielstand gespeichert.
+   v23 · 2026-11-28 · NEU: Wochenend-Glück – samstags und sonntags sind schillernde Aquariummon doppelt so häufig (1/8 statt 1/16); Hinweis beim Tagesgeschenk, im 🗺️-Atlas und im 📖 Seebuch; neuer Erfolg „Sonntagskind“ für einen schillernden Fang am Wochenende.
 */
 try{
-const GAME_VERSION = "v22";
+const GAME_VERSION = "v23";
 const {
   useState,
   useEffect,
@@ -1155,6 +1156,7 @@ const ACHIEVEMENTS = [
   {id:"zeitreisender",ico:"⏰",name:"Zeitreisender",desc:"Fange alle 4 Tageszeit-Gäste (Haubi, Läufi, Zanderan, Welsio).",test:p=>Object.keys(TIME_GUESTS).reduce((a,ph)=>a.concat(TIME_GUESTS[ph]),[]).every(k=>(p.caught||[]).includes(k))},
   {id:"serienfaenger",ico:"🎯",name:"Serienfänger",desc:"Fange insgesamt 25 Aquariummon (Fangbuch im 📖 Seebuch).",test:p=>(p.catchTotal||0)>=25},
   {id:"schnaeppchen",ico:"🏷️",name:"Schnäppchenjäger",desc:"Kaufe 10 Angebote des Tages im Aquariummon-Center.",test:p=>(p.dealCount||0)>=10},
+  {id:"sonntagskind",ico:"🌟",name:"Sonntagskind",desc:"Fange am Wochenende ein schillerndes Aquariummon.",test:p=>(p.weekendShiny||0)>=1},
   {id:"rekordangler",ico:"📏",name:"Rekordangler",desc:"Stelle beim Angeln Größenrekorde für 6 verschiedene Arten auf.",test:p=>Object.keys(p.fishRecords||{}).length>=6}
 ];
 /* DEX-STECKBRIEFE (v9) */
@@ -1250,9 +1252,18 @@ function fmtCm(v) {
 }
 /* SCHILLERNDE AQUARIUMMON (v14): 1/16 Chance bei wilden Begegnungen */
 const SHINY_CHANCE = 1 / 16;
+/* WOCHENEND-GLÜCK (v23): Samstag/Sonntag doppelte Chance auf Schillernde */
+const isWeekend = d => { const w = (d || new Date()).getDay(); return w === 0 || w === 6; };
+const shinyChance = d => isWeekend(d) ? SHINY_CHANCE * 2 : SHINY_CHANCE;
+function weekendText(d) {
+  d = d || new Date();
+  if (isWeekend(d)) return "✨ Wochenend-Glück: Schillernde sind heute doppelt so häufig (1/8)!";
+  const days = 6 - d.getDay();
+  return "✨ Wochenend-Glück (doppelte Chance auf Schillernde) " + (days === 1 ? "ab morgen" : "in " + days + " Tagen") + ".";
+}
 const SHINY_FILTER = "hue-rotate(150deg) saturate(1.5) brightness(1.1) ";
 function rollShiny(mon) {
-  if (mon && Math.random() < SHINY_CHANCE) mon.shiny = true;
+  if (mon && Math.random() < shinyChance()) mon.shiny = true;
   return mon;
 }
 /* ERFOLGS-BELOHNUNGEN (v21): je freigeschaltetem Erfolg einmalig Perlen abholen */
@@ -8320,7 +8331,9 @@ function MenuScreen({
       textAlign: "center",
       marginBottom: 8
     }
-  }, "Entwicklungen: ", EVOLVED_KEYS.filter(k => caught.includes(k)).length, "/", EVOLVED_KEYS.length, " freigeschaltet · ✨ Schillernde: ", player.shinyCount || 0, " · 🎯 Fänge: ", player.catchTotal || 0), (() => {
+  }, "Entwicklungen: ", EVOLVED_KEYS.filter(k => caught.includes(k)).length, "/", EVOLVED_KEYS.length, " freigeschaltet · ✨ Schillernde: ", player.shinyCount || 0, " · 🎯 Fänge: ", player.catchTotal || 0, isWeekend() ? /*#__PURE__*/React.createElement("div", {
+    style: { color: "#f0abfc", marginTop: 3 }
+  }, "✨ Wochenend-Glück: heute doppelte Chance auf Schillernde!") : null), (() => {
     const cnt = dexCount(player);
     const got = player.dexRewards || [];
     const nxt = DEX_MILESTONES.find(m => !got.includes(m.n));
@@ -8624,6 +8637,7 @@ function MenuScreen({
       E("div", { style: { color: "#86efac", fontSize: "clamp(3.5px,.6vw,6px)", textAlign: "center", marginBottom: 8 } }, "🧭 Wahrzeichen entdeckt: ", LANDMARK_IDS.filter(id => (player.landmarks || []).includes(id)).length, "/", LANDMARKS_TOTAL, " – geh in den Städten nah heran!"),
       E("div", { style: { color: "#93c5fd", fontSize: "clamp(3.5px,.6vw,6px)", textAlign: "center", marginBottom: 8, lineHeight: 1.8 } }, weatherNow().ico, " Wetter-Gäste (", weatherNow().name, "): ", weatherGuests().map(k => caught.includes(k) ? "✓ " + MONS[k].name : seen.includes(k) ? "👁 " + MONS[k].name : "❓ ???").join("  ·  ")),
       E("div", { style: { color: "#fcd34d", fontSize: "clamp(3.5px,.6vw,6px)", textAlign: "center", marginBottom: 8, lineHeight: 1.8 } }, (TIME_ICO[dayPhase().name] || "") + " Tageszeit-Gäste (" + dayPhase().name + "): ", timeGuests().length ? timeGuests().map(k => caught.includes(k) ? "✓ " + MONS[k].name : seen.includes(k) ? "👁 " + MONS[k].name : "❓ ???").join("  ·  ") : "tagsüber keine – abends, nachts und morgens schauen!"),
+      E("div", { style: { color: isWeekend() ? "#f0abfc" : "#64748b", fontSize: "clamp(3.5px,.6vw,6px)", textAlign: "center", marginBottom: 8, lineHeight: 1.8 } }, weekendText()),
       E("div", { style: { color: "#7dd3fc", fontSize: "clamp(3.5px,.6vw,6px)", textAlign: "center", marginBottom: 8, lineHeight: 1.8 } }, "🔮 Wetterbericht: ", [0, 1, 2, 3].map(i => { const d = new Date(Date.now() + i * 3 * 3600 * 1000); const w = weatherNow(d); return (i === 0 ? "jetzt" : Math.floor(d.getHours() / 3) * 3 + " Uhr") + " " + w.ico + " " + w.name; }).join("  ·  ")),
       CITIES.map(c => {
         const marks = cityMarks(c.id).map(m => m.label).filter(Boolean);
@@ -10657,6 +10671,7 @@ function AquariumMon() {
     const extra = r.item ? `  +${ITEMS[r.item].ico} ${ITEMS[r.item].name}` : "";
     setTimeout(() => showToast(`🎁 Tagesgeschenk! Tag ${streak} in Folge: 💰+${r.perlen}${extra}`, 4200), 0);
     setTimeout(() => showToast("📜 Neuer Tagesauftrag: Fange " + MONS[questTarget(today)].name + "! (Menü → 🎒)", 4200), 4500);
+    if (isWeekend()) setTimeout(() => showToast(weekendText(), 4200), 13500);
     setTimeout(() => { const dk = dealKey(today); showToast("🏷️ Angebot des Tages im Aquariummon-Center: " + ITEMS[dk].ico + " " + ITEMS[dk].name + " für " + dealPrice(dk) + " 💰", 4200); }, 9000);
   }, [player, scr]);
 
@@ -10776,7 +10791,8 @@ function AquariumMon() {
       dealDay: "",
       dealBought: 0,
       dealCount: 0,
-      achClaimed: []
+      achClaimed: [],
+      weekendShiny: 0
     });
     showDlg(DLGS[0], () => go("starter"));
   }
@@ -10842,6 +10858,7 @@ function AquariumMon() {
       dealBought: 0,
       dealCount: 0,
       achClaimed: [],
+      weekendShiny: 0,
       ...s
     };
     merged.items = {
@@ -10888,7 +10905,7 @@ function AquariumMon() {
       else if ((p.box || []).length < BOX_MAX) np = { ...p, box: [...(p.box || []), mon], caught, seen };
       else np = { ...p, caught, seen };
       if (mon.shiny) {
-        np = { ...np, shinyCount: (np.shinyCount || 0) + 1 };
+        np = { ...np, shinyCount: (np.shinyCount || 0) + 1, weekendShiny: (np.weekendShiny || 0) + (isWeekend() ? 1 : 0) };
         setTimeout(() => { AUDIO.sfx("levelup"); showToast("✨ Schillerndes " + mon.name + " gefangen!", 3600); }, 900);
       }
       np = { ...np, catchTotal: (np.catchTotal || 0) + 1, catchLog: { ...(np.catchLog || {}), [mon.key]: ((np.catchLog || {})[mon.key] || 0) + 1 } };
